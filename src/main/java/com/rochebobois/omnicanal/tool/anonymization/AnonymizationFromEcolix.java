@@ -3,6 +3,7 @@ package com.rochebobois.omnicanal.tool.anonymization;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -84,17 +85,17 @@ public class AnonymizationFromEcolix {
 			for (ClientEligible client : clientsEligibles) {
 				logger.info("Process  " + client.getCodeClient() + " => " + client.getPrenom() + " " + client.getNom());
 				sfAnonymizer.AnonymizeCustomer(client);
-				myOrdersAnonymizer.AnonymizeCustomer (client , sfAnonymizer.getCustomerOrderIds() );
+				
+				myOrdersAnonymizer.AnonymizeCustomerCustomerOrders (client);
 				logger.info("Process " + client.getCodeClient() + " ended On " + referenceDate);
+				
+				logger.info("Unsubscribe email : " + client.getFormerEmail());
+				dqeAnonymizer.unsubscribe (client.getEmail());
+
 			}
 			
-			for (String email : sfAnonymizer.getUnsubsciptionToDotDigital()) {
-				logger.info("Unsubscribe email : " + email);
-				dqeAnonymizer.unsubscribe (email);
-			}
 		} else {
 			List<ClientPartiel> clientItems = AnonymisationCsvReader.readClientsPartiels(eligibleFile);
-			
 			
 			for (ClientPartiel clientItem : clientItems) {
 				if (((clientItem.getUuidCc()==null)||(clientItem.getUuidCc().trim().length()==0))&&(!clientItem.getNoCommandeClient().equals("0"))) {
@@ -105,9 +106,15 @@ public class AnonymizationFromEcolix {
 				}
 				
 				if ((clientItem.getUuidDevis()!=null)&&(clientItem.getUuidDevis().trim().length()>0)) {
+					logger.info("Process - Anonymize Quote : " + clientItem.getUuidDevis());
 					sfAnonymizer.anonymizeQuote (clientItem);
 				} else if ((clientItem.getUuidCc ()!=null)&&(clientItem.getUuidCc().trim().length()>0)) {
+					logger.info("Process - Anonymize Customer Order : " + clientItem.getUuidCc());
 					sfAnonymizer.anonymizeCustomerOrder (clientItem);
+					
+					List<String> orderIds = new ArrayList<String>();
+					orderIds.add(clientItem.getUuidCc());
+					myOrdersAnonymizer.AnonymizeCustomerOrders(clientItem, orderIds);
 				}
 			}
 		}

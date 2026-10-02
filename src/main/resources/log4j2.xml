@@ -5,7 +5,7 @@
 	</Properties>
 	<Appenders>
 		<Console name="Console" target="SYSTEM_OUT">
-			<ThresholdFilter level="DEBUG"
+			<ThresholdFilter level="INFO"
                              onMatch="ACCEPT"
                              onMismatch="DENY"/>
 			<PatternLayout
