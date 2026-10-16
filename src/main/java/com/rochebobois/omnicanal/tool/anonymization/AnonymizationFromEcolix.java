@@ -21,7 +21,7 @@ import com.rochebobois.omnicanal.tool.anonymization.input.AnonymisationCsvReader
 public class AnonymizationFromEcolix {
 	private static final Logger logger = LoggerFactory.getLogger(AnonymizationFromEcolix.class);
 
-	public static final Environment currentEnv = Environment.Dev;
+	public static final Environment currentEnv = Environment.Preprod;
 	
 	public static void main(String[] args) throws IOException, ApiClientException {
 		LocalDate referenceDate = null;
@@ -82,7 +82,7 @@ public class AnonymizationFromEcolix {
 		if (fullprocess) {
 			List<ClientEligible> clientsEligibles = AnonymisationCsvReader.readClientsEligibles(eligibleFile);
 
-			for (ClientEligible client : clientsEligibles) {
+			for (ClientEligible client : clientsEligibles) {				
 				logger.info("Process  " + client.getCodeClient() + " => " + client.getPrenom() + " " + client.getNom());
 				sfAnonymizer.AnonymizeCustomer(client);
 				
@@ -90,7 +90,7 @@ public class AnonymizationFromEcolix {
 				logger.info("Process " + client.getCodeClient() + " ended On " + referenceDate);
 				
 				logger.info("Unsubscribe email : " + client.getFormerEmail());
-				dqeAnonymizer.unsubscribe (client.getEmail());
+				dqeAnonymizer.unsubscribe (client.getFormerEmail().trim());
 
 			}
 			

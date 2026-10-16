@@ -18,6 +18,7 @@ import com.rochebobois.omnicanal.api.Environment;
 import com.rochebobois.omnicanal.api.exception.ApiClientException;
 import com.rochebobois.omnicanal.api.httpclient.HttpStatus;
 import com.rochebobois.omnicanal.api.httpclient.ResponseEntity;
+import com.rochebobois.omnicanal.canonical.domain.OtherId;
 import com.rochebobois.omnicanal.canonical.domain.customer.CustomerAddress;
 import com.rochebobois.omnicanal.canonical.domain.customerorder.AnonymizationReasonEnum;
 import com.rochebobois.omnicanal.canonical.domain.customerorder.CustomerOrder;
@@ -70,6 +71,7 @@ public class MyOrdersAnonymizer {
 	}
 
 	public void AnonymizeCustomerOrders(ClientEligible client, List<String> customerOrderIds) throws JsonMappingException, JsonProcessingException {
+		logger.debug ("---- MyOrders - Anonymise " + customerOrderIds.size() + "customer orders ");
 		
 		for (String customerOrderId : customerOrderIds) {
 			
@@ -162,6 +164,7 @@ public class MyOrdersAnonymizer {
 	}
 	
 	private void AnonymizeCustomerOrder (ClientEligible client, String customerOrderId) throws JsonMappingException, JsonProcessingException {
+		logger.debug ("---- MyOrders - Anonymise customer orders " + customerOrderId);
 		Callable<ResponseEntity<String>> job = myOrdersClient.getCustomerOrder(customerOrderId, "lines,lines.discountType,lines.orderType,lines.status,lines.supplierConfirmation,lines.stock.stockStatus,lines.stock.supplierLines.supplierOrder,lines.stock.customerOrderLine.order,deliveryAddress,deliveryAddress.civilite,deliveryAddress.housingType,deliveryAddress.country,deliveryAddress.state,billingAddress,billingAddress.housingType,billingAddress.country,billingAddress.state,store,store.brand,type,status,currency,saleNature,discountType,cancellationReason,creditNoteReason,channel,saleStore,saleType,countryLanguage,orderPayments,orderPayments.reglementType,orderPayments.paymentType,customerType,zoneStore");
 		ResponseEntity<String> response = null;
 		try {
@@ -169,8 +172,9 @@ public class MyOrdersAnonymizer {
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
-		System.out.println(response.getBody());
 		if (response.getStatusCode()==HttpStatus.OK) {
+			logger.debug ("MyOrders - Customer orders " + customerOrderId + "\n" + response.getBody());
+
 			JsonNode bodyNode = mapper.readTree(response.getBody());
 			MyOrdersCustomerOrderAPI moCustomer = new MyOrdersCustomerOrderAPI(bodyNode);
 			CustomerOrder customerOrder =  MyOrdersHelper.getCanonicalCustomerOrder (moCustomer);
@@ -198,11 +202,8 @@ public class MyOrdersAnonymizer {
 				customerOrder.setInvoice(invoices);
 			}
 
-			System.out.println(customerOrder);
 			ApplyAnonymisation (customerOrder, client);
-			System.out.println(customerOrder);
 		
-//			job = myOrdersClient.putCustomerOrder(id, customerOrder);
 			job = myOrdersClient.anonymizeCustomerOrder(customerOrder);
 			response = null;
 			try {
@@ -210,9 +211,19 @@ public class MyOrdersAnonymizer {
 			} catch (Exception e) {
 				e.printStackTrace();
 			}
-			
-			System.out.println(response.getStatusCode());
-			System.out.println(response.getBody());
+
+			List<OtherId> otherId = customerOrder.searchOtherId("Ecolix");
+			String ecolixId = "";
+			if (otherId.size()>0) {
+				ecolixId = otherId.get(0).getSystemId() + "-" + otherId.get(0).getLocalId();
+			}
+
+			if (response.getStatusCode()==HttpStatus.OK) {
+				logger.debug ("MyOrders - Customer Order " + customerOrderId + "(" + ecolixId + ") anonymization Ends : " + response.getStatusCode());				
+			} else {				
+				logger.error ("MyOrders - Customer Order " + customerOrderId + "(" + ecolixId + ") anonymization Fails : " + response.getStatusCode() + "\n" + response.getBody() );				
+			}
+
 			System.out.println("----------------------------------- Customer Order Anonymization Ends ----------------------------------- ");									
 		}
 	}

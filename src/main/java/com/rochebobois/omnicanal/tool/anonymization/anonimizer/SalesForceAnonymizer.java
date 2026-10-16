@@ -31,9 +31,12 @@ import com.rochebobois.omnicanal.sfsc.domain.SFSCCustomerHelper;
 import com.rochebobois.omnicanal.sfsc.domain.SFSCCustomerOrder;
 import com.rochebobois.omnicanal.sfsc.domain.SFSCOpportunity;
 import com.rochebobois.omnicanal.sfsc.domain.SFSCQuote;
+import com.rochebobois.omnicanal.sfsc.domain.SFSCSupplierOrder;
 import com.rochebobois.omnicanal.tool.anonymization.AnonymizationFromEcolix;
 import com.rochebobois.omnicanal.tool.anonymization.domain.ClientEligible;
 import com.rochebobois.omnicanal.tool.anonymization.domain.ClientPartiel;
+import com.rochebobois.omnicanal.tool.anonymization.report.ReportBook;
+import com.rochebobois.omnicanal.tool.anonymization.report.ReportType;
 
 public class SalesForceAnonymizer {
 	private static final Logger logger = LoggerFactory.getLogger(AnonymizationFromEcolix.class);
@@ -48,7 +51,10 @@ public class SalesForceAnonymizer {
 	private Map<String,String> quoteIds = new HashMap<String, String>();
 	private Map<String,String> opportunityIds = new HashMap<String, String>();
 	private Map<String,String> caseIds = new HashMap<String, String>();
+	private Map<String,String> historyIds = new HashMap<String, String>();
+	private Map<String,String> emailIds = new HashMap<String, String>();
 	private List<String> customerOrderUuids = new ArrayList<String>();
+	private List<String> supplierOrderIds = new ArrayList<String>();
 
 	public SalesForceAnonymizer(Environment currentEnv, LocalDate referenceDate) throws ApiClientException {
 		setCurrentEnv(currentEnv);
@@ -62,6 +68,8 @@ public class SalesForceAnonymizer {
 	public static final String QuotesReference = "Quotes";
 	public static final String OpportunitiesReference = "Opportunities";
 	public static final String CasesReference = "Cases";
+	public static final String CustomerHistoryReference = "History";
+	public static final String EmailReference = "Emails";
 
 	private void setCurrentEnv(Environment currentEnv) {
 		this.currentEnv = currentEnv;
@@ -76,7 +84,7 @@ public class SalesForceAnonymizer {
 	
 	
 	public void AnonymizeCustomer (ClientEligible client) throws JsonMappingException, JsonProcessingException {
-		logger.info ("Salesforce - Search Customer" + client.getCodeClient() + " - " + client.getNom() + " - " + client.getEmail() + " - " + client.getUuid());
+		logger.info ("Salesforce - Search Customer : " + client.getCodeClient() + " - " + client.getNom() + " - " + client.getEmail() + " - " + client.getUuid());
 		
 		Callable<ResponseEntity<String>> job = sfscClient.getCustomer(client.getUuid());
 		ResponseEntity<String> response = null;
@@ -161,8 +169,11 @@ public class SalesForceAnonymizer {
 			sfscCustomer.setOptinPartnerModifiedDate(LocalDate.now());
 			sfscCustomer.setOptinPostalModifiedDate(LocalDate.now());
 			sfscCustomer.setOptinSMSModifiedDate(LocalDate.now());
-
-			logger.info ("Salesforce - Update Customer");
+			
+			sfscCustomer.setAnonymizationStatus(AnonymizationStatusEnum.Anonymized);
+			sfscCustomer.setAnonymizationDate(referenceDate);
+			
+			logger.info ("- Salesforce - Update Customer");
 			logger.debug (sfscCustomer.toString());
 			job = sfscClient.putCustomer(sfscCustomer);
 			response = null;
@@ -173,113 +184,170 @@ public class SalesForceAnonymizer {
 				e.printStackTrace();
 			}
 			
-			if (response.getStatusCode()==HttpStatus.OK) {
-				logger.debug (response.getBody());
+			if (response.getStatusCode()!=HttpStatus.OK) {
+				logger.error ("-> Salesforce - Update Customer FAILED : " + response.getBody());				
+			} else {
+				ReportBook.Customer (client.getUuid());
+				
+				logger.debug ("-> Salesforce - Update Customer response : " + response.getBody());
 				JsonNode sfscCustomerUpdateResponseNode = mapper.readTree(response.getBody());
 				
 				JsonNode SfAccountIdNode = sfscCustomerUpdateResponseNode.get("SfAccountId");
 				if ((SfAccountIdNode!=null)&&!(SfAccountIdNode.isNull())) {
 					String CustomerAccountId = SfAccountIdNode.asText();
 					
-					String getIdsRequest = "{\r\n"
+					Map<String, String> requests = new HashMap<String, String>();
+					
+					requests.put(CustomerOrdersReference , "{\r\n"
 							+ "    \"allOrNone\": false,\r\n"
 							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
 							+ "      \"method\": \"GET\",\r\n"
 							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id FROM CustomerOrder__c WHERE Account__c='" + CustomerAccountId + "'\",\r\n"
 							+ "      \"referenceId\": \"" + CustomerOrdersReference + "\"\r\n"
-							+ "    },\r\n"
+							+ "    }"
+							+ "   ]\r\n"
+							+ "}");
+					
+					requests.put(QuotesReference, "{\r\n"
+							+ "    \"allOrNone\": false,\r\n"
+							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
 							+ "      \"method\": \"GET\",\r\n"
 							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id FROM Quote__c WHERE Account__c='" + CustomerAccountId + "'\",\r\n"
 							+ "      \"referenceId\": \""+QuotesReference+"\"\r\n"
-							+ "    },\r\n"
+							+ "    }\r\n"
+							+ "   ]\r\n"
+							+ "}");
+					
+					requests.put(OpportunitiesReference, "{\r\n"
+							+ "    \"allOrNone\": false,\r\n"
+							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
 							+ "      \"method\": \"GET\",\r\n"
 							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id FROM Opportunity WHERE AccountID='" + CustomerAccountId + "'\",\r\n"
 							+ "      \"referenceId\": \""+OpportunitiesReference+"\"\r\n"
 							+ "    }\r\n"
+							+ "   ]\r\n"
+							+ "}");
+
+					requests.put(CasesReference, "{\r\n"
+							+ "    \"allOrNone\": false,\r\n"
+							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
 							+ "      \"method\": \"GET\",\r\n"
 							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id FROM Case WHERE AccountID='" + CustomerAccountId + "'\",\r\n"
 							+ "      \"referenceId\": \""+CasesReference+"\"\r\n"
 							+ "    }\r\n"
-							+ "\r\n"
 							+ "   ]\r\n"
-							+ "}";
+							+ "}");
+
+					requests.put(CustomerHistoryReference, "{\r\n"
+							+ "    \"allOrNone\": false,\r\n"
+							+ "    \"compositeRequest\": [\r\n"
+							+ "{\r\n"
+							+ "      \"method\": \"GET\",\r\n"
+							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id, Field, OldValue, NewValue, CreatedDate FROM AccountHistory WHERE AccountId = '" + CustomerAccountId + "'  AND Field in ('FirstName', 'LastName', 'Salutation', 'PersonEmail', 'Email', 'BillingStreet', 'BillingCity', 'BillingPostalCode', 'ShippingStreet', 'ShippingCity', 'ShippingPostalCode', 'PersonHomePhone', 'PersonMobilePhone')\",\r\n"
+							+ "      \"referenceId\": \""+CustomerHistoryReference+"\"\r\n"
+							+ "    }\r\n"
+							+ "   ]\r\n"
+							+ "}");
+
+					requests.put(EmailReference, "{\r\n"
+							+ "    \"allOrNone\": false,\r\n"
+							+ "    \"compositeRequest\": [\r\n"
+							+ "{\r\n"
+							+ "      \"method\": \"GET\",\r\n"
+							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id, Subject, FromAddress, ToAddress, Incoming, MessageDate, ParentId, Parent.CaseNumber FROM EmailMessage WHERE Parent.AccountId = '" + CustomerAccountId + "' ORDER BY MessageDate DESC\",\r\n"
+							+ "      \"referenceId\": \""+EmailReference+"\"\r\n"
+							+ "    }\r\n"
+							+ "   ]\r\n"
+							+ "}");
 					
-					
-					logger.debug (getIdsRequest);
-					job = sfscClient.callComposite(getIdsRequest);
-					response = null;
-					try {
-						response = job.call();
-					} catch (Exception e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-					
-					
-					if (response.getStatusCode()==HttpStatus.OK) {
-						logger.debug ("HttpStatus : OK\n" + response.getBody());
+					for (Entry<String, String> requestEntry : requests.entrySet()) {
+						logger.debug ("-- Salesforce - Get Customer Objets : " + requestEntry.getValue().replace("\n","").replace("\r",""));
+						job = sfscClient.callComposite(requestEntry.getValue());
+						response = null;
+						try {
+							response = job.call();
+						} catch (Exception e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
 						
-						JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 						
-						JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
-						for (JsonNode linkedObjectList : compositeResponseNode) {
-							JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-							if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-								JsonNode bodyNode = linkedObjectList.get("body"); 
-								if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-									JsonNode recordsNode = bodyNode.get("records"); 
-									if ((recordsNode!=null)&&(!recordsNode.isNull())) {
-										for (JsonNode recordNode : recordsNode) {
-											JsonNode idNode = recordNode.get("Id");
-											String url = null;
-											if ((idNode!=null)&&(!idNode.isNull())) {
-												JsonNode attributeNode = recordNode.get("attributes");
-												if ((attributeNode!=null)&&(!attributeNode.isNull())) {
-													JsonNode urlNode = attributeNode.get("url");
-													if ((urlNode!=null)&&(!urlNode.isNull())) {
-														url = urlNode.asText();
+						if (response.getStatusCode()!=HttpStatus.OK) {
+							logger.error ("-- Salesforce - Get Customer " + requestEntry.getKey() + " FAILED" + response.getStatusCode() + "\n" + response.getBody() );
+						} else {
+							logger.debug ("-- Salesforce - Get Customer " + requestEntry.getKey() + " OK : " + response.getBody());
+							
+							JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+							
+							JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+							for (JsonNode linkedObjectList : compositeResponseNode) {
+								JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+								if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+									JsonNode bodyNode = linkedObjectList.get("body"); 
+									if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+										JsonNode recordsNode = bodyNode.get("records"); 
+										if ((recordsNode!=null)&&(!recordsNode.isNull())) {
+											for (JsonNode recordNode : recordsNode) {
+												JsonNode idNode = recordNode.get("Id");
+												String url = null;
+												if ((idNode!=null)&&(!idNode.isNull())) {
+													JsonNode attributeNode = recordNode.get("attributes");
+													if ((attributeNode!=null)&&(!attributeNode.isNull())) {
+														JsonNode urlNode = attributeNode.get("url");
+														if ((urlNode!=null)&&(!urlNode.isNull())) {
+															url = urlNode.asText();
+														}
 													}
-												}
-												if (referenceObjectNode.asText().equals(CustomerOrdersReference)) {
-													customerOrderIds.put(idNode.asText(),url);
-												}
-												if (referenceObjectNode.asText().equals(QuotesReference)) {
-													quoteIds.put(idNode.asText(),url);
-												}
-												if (referenceObjectNode.asText().equals(OpportunitiesReference)) {
-													opportunityIds.put(idNode.asText(),url);
-												}
-												if (referenceObjectNode.asText().equals(OpportunitiesReference)) {
-													caseIds.put(idNode.asText(),url);
+													if (referenceObjectNode.asText().equals(CustomerOrdersReference)) {
+														customerOrderIds.put(idNode.asText(),url);
+													}
+													if (referenceObjectNode.asText().equals(QuotesReference)) {
+														quoteIds.put(idNode.asText(),url);
+													}
+													if (referenceObjectNode.asText().equals(OpportunitiesReference)) {
+														opportunityIds.put(idNode.asText(),url);
+													}
+													if (referenceObjectNode.asText().equals(CasesReference)) {
+														caseIds.put(idNode.asText(),url);
+													}
+													if (referenceObjectNode.asText().equals(CustomerHistoryReference)) {
+														historyIds.put(idNode.asText(),url);
+													}
+													if (referenceObjectNode.asText().equals(EmailReference)) {
+														emailIds.put(idNode.asText(),url);
+													}
 												}
 											}
 										}
 									}
 								}
-							}
-						}
-						
-						List <SFSCCustomerOrder> customerOrderList = getAllCustomerOrders (customerOrderIds);
-						anonymiseCustomerOrders (client, customerOrderList);
-						
-						List <SFSCQuote> quoteList = getAllQuotes (quoteIds);
-						anonymiseQuotes (client, quoteList);
-
-						List <SFSCOpportunity> opportunityList = getAllOpportunities(opportunityIds);
-						anonymiseOpportunities (client, opportunityList);
-						
-						List <SFSCCase> caseList = getAllCases(caseIds);
-						anonymiseCases (client, caseList);
-						
+							}						
+						}						
 					}
+					
+					List <SFSCCustomerOrder> customerOrderList = getAllCustomerOrders (customerOrderIds);
+					anonymiseCustomerOrders (client, customerOrderList);
+					
+					List <SFSCQuote> quoteList = getAllQuotes (quoteIds);
+					anonymiseQuotes (client, quoteList);
+
+					List <SFSCOpportunity> opportunityList = getAllOpportunities(opportunityIds);
+					anonymiseOpportunities (client, opportunityList);
+					
+					List <SFSCCase> caseList = getAllCases(caseIds);
+					anonymiseCases (client, caseList);
+					
+					fillSupplierOrderList (customerOrderList);
+					anonymiseSupplierOrders(client, supplierOrderIds);
+					
+					deleteActivity (historyIds);
+					deleteEmails (emailIds);
+
 				}
-				
-			} else {
-				logger.error ("Erreur de Mise à jour du client SFSC");
 			}
 			
 		} else {
@@ -287,22 +355,46 @@ public class SalesForceAnonymizer {
 		}
 	}
 	
-	private void anonymiseCases(ClientEligible client, List<SFSCCase> caseList) throws JsonMappingException, JsonProcessingException {
-		if (caseList.size()==0) return;
+	private void deleteActivity(Map<String, String> historyIds) throws JsonMappingException, JsonProcessingException {
+		if (historyIds.size()==0) return;
+		
+		logger.info ("---- Salesforce - Delete " + historyIds.size() + " Activities");
+		
+		List<String> compositeCalls = new ArrayList<String>();
+
+		for (Entry<String, String> entry : historyIds.entrySet()) {
+			
+			compositeCalls.add  ("{"
+					+ "\"method\": \"DELETE\"," 
+					+ "\"url\": \"" + entry.getValue() + "\","
+					+ "\"referenceId\": \"" + entry.getKey() + "\""
+					+ "}");
+		}
+
+		if (compositeCalls.size()>0) {
+			List<ResponseEntity<String>> responses = sfscClient.callComposite(compositeCalls);
+			
+			for (ResponseEntity<String> response : responses) {
+				if (response.getStatusCode()==HttpStatus.OK ) {
+					logger.info ("----> Salesforce Response - Activities Deleted - End - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+				} else {
+					logger.error ("----> Salesforce Response - Activities - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
+				}				
+			}
+		}
+	}
+	
+	private void deleteEmails(Map<String, String> emailIds) throws JsonMappingException, JsonProcessingException {
+		if (emailIds.size()==0) return;
 		
 		String composite = "";
-		logger.info ("Salesforce - Anonymise Opportunities");
-		
-		for (SFSCCase sfscCase : caseList) {
-			sfscCase.setSubject(client.getPrenom() + client.getNom());
+		logger.info ("---- Salesforce - Delete " + emailIds.size() + " Emails");
+		for (Entry<String, String> entry : emailIds.entrySet()) {
 			
 			composite += ",{"
-					+ "\"method\": \"PATCH\"," 
-					+ "\"url\": \"/services/data/v61.0/sobjects/Opportunity/" + sfscCase.getId() + "\","
-					+ "\"referenceId\": \"" + sfscCase.getId() + "\","
-					+ "\"body\": {"
-					+ "\"Name\":\""+sfscCase.getSubject()+"\""
-					+ "}"
+					+ "\"method\": \"DELETE\"," 
+					+ "\"url\": \"" + entry.getValue() + "\","
+					+ "\"referenceId\": \"" + entry.getKey() + "\""
 					+ "}";
 		}
 		
@@ -314,6 +406,49 @@ public class SalesForceAnonymizer {
 				+ "}";
 
 		logger.debug ("Batch : \n" + composite);
+		
+		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
+		ResponseEntity<String> response = null;
+		try {
+			response = job.call();
+		} catch (Exception e) {
+			logger.debug ("---- Salesforce Response - DELETE Emails - FAILED - " + e.getMessage());				
+		}
+		if (response.getStatusCode()==HttpStatus.OK ) {
+			logger.info ("---- Salesforce Response - Emails Deleted - End - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+		} else {
+			logger.error ("---- Salesforce Response - Emails - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
+		}
+	}
+	
+	
+	private void anonymiseCases(ClientEligible client, List<SFSCCase> caseList) throws JsonMappingException, JsonProcessingException {
+		if (caseList.size()==0) return;
+		
+		String composite = "";
+		logger.info ("---- Salesforce - Anonymise " + caseList.size() + " Cases");
+		
+		for (SFSCCase sfscCase : caseList) {
+			sfscCase.setSubject(client.getPrenom() + client.getNom());
+			
+			composite += ",{"
+					+ "\"method\": \"PATCH\"," 
+					+ "\"url\": \"/services/data/v61.0/sobjects/Opportunity/" + sfscCase.getId() + "\","
+					+ "\"referenceId\": \"" + sfscCase.getId() + "\","
+					+ "\"body\": {"
+					+ "\"Subject\":\""+sfscCase.getSubject()+"\""
+					+ "}"
+					+ "}";
+		}
+		
+		composite = "{\r\n"
+				+ "    \"allOrNone\": false,\r\n"
+				+ "    \"compositeRequest\": [\r\n"
+				+ composite.substring(1)
+				+ "   ]\r\n"
+				+ "}";
+
+		logger.debug ("---- Salesforce - Anonymise Cases" + composite.replace("\n", "").replace("\r", ""));
 		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
 		ResponseEntity<String> response = null;
 		try {
@@ -321,13 +456,13 @@ public class SalesForceAnonymizer {
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
-		logger.debug ("Salesforce Response - Anonymise Opportunity\n" + response.getStatusCode());			
+		logger.debug ("---- Salesforce Response - Anonymise Cases - End - " + response.getStatusCode());			
 	}
 	private void anonymiseOpportunities(ClientEligible client, List<SFSCOpportunity> opportunityList) throws JsonMappingException, JsonProcessingException {
 		if (opportunityList.size()==0) return;
 		
 		String composite = "";
-		logger.info ("Salesforce - Anonymise Opportunities");
+		logger.info ("---- Salesforce - Anonymise " + opportunityList.size() + " Opportunities");
 		for (SFSCOpportunity sfscOpportunity : opportunityList) {
 			sfscOpportunity.setName(client.getPrenom() + client.getNom());
 			
@@ -348,7 +483,7 @@ public class SalesForceAnonymizer {
 				+ "   ]\r\n"
 				+ "}";
 
-		logger.debug ("Batch : \n" + composite);
+		logger.debug ("---- Salesforce - Anonymise Opportunities" + composite.replace("\n", "").replace("\r", ""));
 		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
 		ResponseEntity<String> response = null;
 		try {
@@ -356,7 +491,7 @@ public class SalesForceAnonymizer {
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
-		logger.debug ("Salesforce Response - Anonymise Opportunity\n" + response.getStatusCode());		
+		logger.debug ("---- Salesforce Response - Anonymise Opportunity - End - " + response.getStatusCode());		
 	}
 
 	public void anonymizeQuote(ClientPartiel item) throws JsonMappingException, JsonProcessingException {
@@ -371,7 +506,7 @@ public class SalesForceAnonymizer {
 	private void anonymiseQuotes(ClientEligible client, List<SFSCQuote> quoteList) throws JsonMappingException, JsonProcessingException {
 		if (quoteList.size()==0) return;
 		
-		logger.info ("Salesforce - Anonymise Quotes");
+		logger.info ("---- Salesforce - Anonymise " + quoteList.size() + " Quotes");
 		String composite = "";
 		for (SFSCQuote sfscQuote : quoteList) {
 			sfscQuote.setInternalObservations__c("");
@@ -434,7 +569,7 @@ public class SalesForceAnonymizer {
 				+ "   ]\r\n"
 				+ "}";
 
-		logger.debug (composite);
+		logger.debug ("---- Salesforce - Anonymise Quotes Request : " + composite.replace("\n", "").replace("\r", ""));
 		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
 		ResponseEntity<String> response = null;
 		try {
@@ -443,7 +578,7 @@ public class SalesForceAnonymizer {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
-		logger.debug ("Salesforce Response - Anonymise Quote - " + response.getStatusCode());		
+		logger.debug ("---- Salesforce Response - Anonymise Quote - End - " + response.getStatusCode());		
 	}
 
 
@@ -453,7 +588,7 @@ public class SalesForceAnonymizer {
 			return;
 		}
 		
-		logger.info ("Salesforce Anonymize Customer Orders");
+		logger.info ("---- Salesforce Anonymize " + customerOrderList.size() + " Customer Orders");
 
 		String composite = "";
 		for (SFSCCustomerOrder sfscCustomerOrder : customerOrderList) {
@@ -505,6 +640,7 @@ public class SalesForceAnonymizer {
 					+ "\"body\": "
 					+ sfscCustomerOrder.toPayload()
 					+ "}";
+			
 		}
 		
 		composite = "{\r\n"
@@ -514,22 +650,28 @@ public class SalesForceAnonymizer {
 				+ "   ]\r\n"
 				+ "}";
 
-		logger.debug (composite);
+		logger.debug ("---- Salesforce Anonymize Customer Orders Request : " + composite.replace("\n", "").replace("\r", ""));
 		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
 		ResponseEntity<String> response = null;
 		try {
 			response = job.call();
 		} catch (Exception e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
+			logger.error ("---- Salesforce Response - Anonymise customer orders - FAILED - " + e.getMessage());
 		}
-		logger.debug ("Salesforce Response - Anonymise customer orders : " + response.getStatusCode());
+		if (response.getStatusCode()==HttpStatus.OK) {
+			logger.info ("---- Salesforce Response - Anonymise customer orders - Response - " + response.getStatusCode() + " - " + response.getBody());
+			interpreteResponse (ReportType.CustomerOrder, client, response.getBody());
+		} else {
+			logger.error ("---- Salesforce Response - Anonymise customer orders - FAILED - " + response.getStatusCode() + " - " + response.getBody());
+		}
 		
 	}
 
 
-	@SuppressWarnings("unused")
 	private void anonymiseSupplierOrders(ClientEligible client, List<String> supplierOrderIds) throws JsonMappingException, JsonProcessingException {
+		logger.info ("---- Salesforce Anonymize " + supplierOrderIds.size() + " Supplier Orders");
+		
 		List<String> compositeCalls = new ArrayList<String>();
 		for (String supplierOrderId : supplierOrderIds) {
 			compositeCalls.add("        {\r\n"
@@ -542,12 +684,12 @@ public class SalesForceAnonymizer {
 		if (compositeCalls.size()>0) {
 			List<ResponseEntity<String>> responses = sfscClient.callComposite(compositeCalls);
 		
-			List<String> customerOrderLineIds = new ArrayList<String>();
+			List<SFSCSupplierOrder> supplierOrders = new ArrayList<SFSCSupplierOrder>();
 			
 			for (ResponseEntity<String> response : responses) {
 				if (response.getStatusCode()==HttpStatus.OK) {
-					logger.debug ("customerOrderLineIds\n" + response.getBody());
-					
+					logger.debug ("----> Salesforce Get Supplier Orders - Response : " + response.getBody().replace("\n", "").replace("\r", ""));
+
 					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 					
 					JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
@@ -556,26 +698,58 @@ public class SalesForceAnonymizer {
 						if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
 							JsonNode bodyNode = linkedObjectList.get("body"); 
 							if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-								JsonNode bodyRecords = bodyNode.get("records"); 
-								if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
-									for (JsonNode record : bodyRecords) {
-										JsonNode idNode = record.get("Id");
-										if ((idNode!=null)&&(!idNode.isNull())) {
-											customerOrderLineIds.add(idNode.asText());											
-										}
-									}
-								}
+								
+								SFSCSupplierOrder supplierOrder = new SFSCSupplierOrder (bodyNode);
+								supplierOrders.add(supplierOrder);
 							}
 						}
 					}
 				}
 			}
+			
+			String composite = "";
+
+			for (SFSCSupplierOrder sfscSupplierOrder : supplierOrders) {
+				sfscSupplierOrder.setName(client.getPrenom() + client.getNom());
+				
+				composite += ",{"
+						+ "\"method\": \"PATCH\"," 
+						+ "\"url\": \"/services/data/v61.0/sobjects/SupplierOrder__c/" + sfscSupplierOrder.getId() + "\","
+						+ "\"referenceId\": \"" + sfscSupplierOrder.getId() + "\","
+						+ "\"body\": {"
+						+ "\"Name\":\""+sfscSupplierOrder.getName()+"\""
+						+ "}"
+						+ "}";
+			}
+			
+			composite = "{\r\n"
+					+ "    \"allOrNone\": false,\r\n"
+					+ "    \"compositeRequest\": [\r\n"
+					+ composite.substring(1)
+					+ "   ]\r\n"
+					+ "}";
+
+			logger.debug ("----> Salesforce Anonymise Supplier Orders - Request : " + composite.replace("\n", "").replace("\r", ""));
+
+			Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
+			ResponseEntity<String> response = null;
+			try {
+				response = job.call();
+			} catch (Exception e) {
+				logger.error ("---- Salesforce Response - Anonymise SupplierOrders - FAILED - " + e.getMessage());
+				e.printStackTrace();
+			}
+			if (response.getStatusCode()==HttpStatus.OK) {
+				logger.info ("---- Salesforce Response - Anonymise SupplierOrders - Response - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));
+				interpreteResponse (ReportType.SupplierOrder, client, response.getBody());
+			} else {
+				logger.error ("---- Salesforce Response - Anonymise SupplierOrders - FAILED - " + response.getStatusCode() + " - " + response.getBody());
+			}
 		}
-		
 	}
 
 	private SFSCQuote getQuote (String quoteId) throws JsonMappingException, JsonProcessingException {
-		logger.info ("Salesforce - get Quotes");
+		logger.info ("---- Salesforce - get Quotes");
 
 		Callable<ResponseEntity<String>> job = sfscClient.getQuoteByUuid(quoteId);
 		ResponseEntity<String> response = null;
@@ -596,7 +770,7 @@ public class SalesForceAnonymizer {
 				return quote;
 			}
 		} else {
-			logger.error("Salesforce - Quote Search Error : " + response.getStatusCode() + " : " + quoteId);
+			logger.error("---- Salesforce - Quote Search Error : " + response.getStatusCode() + " : " + quoteId);
 		}
 		return null;
 	}
@@ -608,7 +782,7 @@ public class SalesForceAnonymizer {
 			composite += ",{\"method\": \"GET\",\"url\": \""+customerOrderItem.getValue()+"\",\"referenceId\": \""+ customerOrderItem.getKey() +"\"}";
 		}
 		
-		logger.debug("Salesforce Anonymize Quotes");		
+		logger.debug("---- Salesforce Anonymize Quotes");		
 		if (composite.length()==0) {
 			return quoteList;
 		} else {
@@ -619,7 +793,7 @@ public class SalesForceAnonymizer {
 					+ "   ]\r\n"
 					+ "}";
 		}
-		logger.debug(composite);
+		logger.debug("---- Salesforce Anonymize Quotes Request :" + composite.replace("\n","").replace("\r",""));
 		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
 		ResponseEntity<String> response = null;
 		try {
@@ -652,7 +826,7 @@ public class SalesForceAnonymizer {
 	private List<SFSCCase> getAllCases(Map<String, String> caseIds) throws JsonMappingException, JsonProcessingException {
 		String composite = "";
 		
-		logger.info ("Salesforce Get Opportunities");
+		logger.info ("---- Salesforce Get " + caseIds.size() + " Cases");
 
 		List<SFSCCase> caseList = new ArrayList<SFSCCase>();
 		for (Entry<String, String> caseItem : caseIds.entrySet()) {
@@ -669,7 +843,7 @@ public class SalesForceAnonymizer {
 					+ "   ]\r\n"
 					+ "}";
 		}
-		logger.debug (composite);
+		logger.debug ("---- Salesforce Get Cases Request : " + composite.replace("\n", "").replace("\r", ""));
 		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
 		ResponseEntity<String> response = null;
 		try {
@@ -680,7 +854,7 @@ public class SalesForceAnonymizer {
 		}
 
 		if (response.getStatusCode()==HttpStatus.OK) {
-			logger.debug ("Salesforce response - Opportunity : \n" + response.getBody());
+			logger.debug ("---- Salesforce Get Cases Response : " + response.getBody());
 			
 			JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 			
@@ -699,10 +873,9 @@ public class SalesForceAnonymizer {
 		return caseList;
 	}
 	
-	private List<SFSCOpportunity> getAllOpportunities(Map<String, String> opportunitiesIds) throws JsonMappingException, JsonProcessingException {
+	private List<SFSCOpportunity> getAllOpportunities(Map<String, String> opportunitiesIds) throws JsonMappingException, JsonProcessingException {		
+		logger.info ("---- Salesforce Get " + opportunitiesIds.size() + " Opportunities");
 		String composite = "";
-		
-		logger.info ("Salesforce Get Opportunities");
 
 		List<SFSCOpportunity> opportunityList = new ArrayList<SFSCOpportunity>();
 		for (Entry<String, String> customerOrderItem : opportunitiesIds.entrySet()) {
@@ -719,7 +892,7 @@ public class SalesForceAnonymizer {
 					+ "   ]\r\n"
 					+ "}";
 		}
-		logger.debug (composite);
+		logger.debug ("---- Salesforce Get Opportunities : " + composite.replace("\n", "").replace("\r", "") );
 		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
 		ResponseEntity<String> response = null;
 		try {
@@ -730,7 +903,7 @@ public class SalesForceAnonymizer {
 		}
 
 		if (response.getStatusCode()==HttpStatus.OK) {
-			logger.debug ("Salesforce response - Opportunity : \n" + response.getBody());
+			logger.debug ("Salesforce response - Opportunity : " + response.getBody());
 			
 			JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 			
@@ -750,6 +923,8 @@ public class SalesForceAnonymizer {
 	}
 	
 	private List<SFSCCustomerOrder> getAllCustomerOrders(Map<String, String> customerOrderIds) throws JsonMappingException, JsonProcessingException {
+		logger.info ("--- Salesforce Get Customer " + customerOrderIds.size() + " Orders");
+		
 		List<String> compositeCalls = new ArrayList<String>();
 		List<SFSCCustomerOrder> customerOrderList = new ArrayList<SFSCCustomerOrder>();
 		for (Entry<String, String> customerOrderItem : customerOrderIds.entrySet()) {
@@ -763,7 +938,7 @@ public class SalesForceAnonymizer {
 			
 			for (ResponseEntity<String> response : responses) {
 				if (response.getStatusCode()==HttpStatus.OK) {
-					logger.debug (response.getBody());
+					logger.debug ("---> Salesforce Get Customer Orders Response : " + response.getBody());
 					
 					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 					
@@ -784,8 +959,8 @@ public class SalesForceAnonymizer {
 		return customerOrderList;
 	}
 
-	@SuppressWarnings("unused")
-	private void fillSupplierOrderList(List<String> supplierOrderIds, List<SFSCCustomerOrder> customerOrderList) throws JsonMappingException, JsonProcessingException {
+	private void fillSupplierOrderList(List<SFSCCustomerOrder> customerOrderList) throws JsonMappingException, JsonProcessingException {
+		logger.info ("---- Salesforce Get " + customerOrderList.size() + " Supplier Orders");
 		List<String> compositeCalls = new ArrayList<String>();
 		for (SFSCCustomerOrder customerOrder : customerOrderList) {
 			compositeCalls.add("        {\r\n"
@@ -802,7 +977,7 @@ public class SalesForceAnonymizer {
 			
 			for (ResponseEntity<String> response : responses) {
 				if (response.getStatusCode()==HttpStatus.OK) {
-					logger.debug ("customerOrderLineIds\n" + response.getBody());
+					logger.debug ("----> Salesforce Get Supplier Orders Lines Response : " + response.getBody());
 					
 					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 					
@@ -844,7 +1019,7 @@ public class SalesForceAnonymizer {
 					
 					for (ResponseEntity<String> response : responses) {
 						if (response.getStatusCode()==HttpStatus.OK) {
-							logger.debug ("suplierOrderLineIds \n" + response.getBody());
+							logger.debug ("----> Salesforce Get Supplier Orders Lines <-> Customer Orders Lines - Response : " + response.getBody());
 							
 							JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 							
@@ -880,10 +1055,11 @@ public class SalesForceAnonymizer {
 	
 						if (compositeCalls.size()>0) {
 							responses = sfscClient.callComposite(compositeCalls);
-													
+								
+							List<String> localSupplierOrderLinesId = new ArrayList<String>();
 							for (ResponseEntity<String> response : responses) {
 								if (response.getStatusCode()==HttpStatus.OK) {
-									logger.debug ("suplierOrderIds \n" + response.getBody());
+									logger.debug ("----> Salesforce Get Supplier Orders - Response : " + response.getBody());
 									
 									JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 									
@@ -898,7 +1074,66 @@ public class SalesForceAnonymizer {
 													for (JsonNode record : bodyRecords) {
 														JsonNode idNode = record.get("SupplierOrder__c");
 														if ((idNode!=null)&&(!idNode.isNull())) {
-															supplierOrderIds.add(idNode.asText());											
+															if (!localSupplierOrderLinesId.contains(idNode.asText())) {
+																localSupplierOrderLinesId.add(idNode.asText());																											
+															}
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+							List<String> howManyCustomerOrderCalls = new ArrayList<String>();
+							// getting all Customer orders attached to a Supplier Order. 
+							// If Result > 1 => It's a stock Order
+							// If Result = 1 => It's an order on demand (Contremarque)
+							// If Result < 0 => It's Incoherent
+							
+							for (String supplierOrderId : localSupplierOrderLinesId) {
+								howManyCustomerOrderCalls.add("        {\r\n"
+										+ "            \"method\": \"GET\",\r\n"
+										+ "            \"url\": \"/services/data/v61.0/query?q=SELECT Id, SupplierOrderLine__r.SupplierOrder__r.ExternalId__c, CustomerOrderLine__r.CustomerOrder__r.ExternalId__c From CustomerSupplierOrderLine__c where SupplierOrderLine__c in ( SELECT Id FROM SupplierOrderLine__c where SupplierOrder__r.Id = '"+supplierOrderId+"')\",\r\n"
+										+ "            \"referenceId\": \""+supplierOrderId.trim()+"\"\r\n"
+										+ "        }");
+							}
+								
+							if (howManyCustomerOrderCalls.size()>0) {
+								responses = sfscClient.callComposite(howManyCustomerOrderCalls);
+								
+								for (ResponseEntity<String> response : responses) {
+									if (response.getStatusCode()==HttpStatus.OK) {
+										logger.debug ("----> Salesforce Count Customer Orders from Supplier Orders - Response : " + response.getBody());
+										
+										JsonNode sourceCustomerOrderNode = mapper.readTree(response.getBody());
+										
+										JsonNode compositeResponseNode = sourceCustomerOrderNode.get("compositeResponse");
+										for (JsonNode linkedObjectList : compositeResponseNode) {
+											JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+											if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+												JsonNode bodyNode = linkedObjectList.get("body"); 
+												if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+													JsonNode sizeNode = bodyNode.get("totalSize"); 
+													if ((sizeNode!=null)&&(!sizeNode.isNull())) {
+														if (sizeNode.asInt()==1) {
+															supplierOrderIds.add(referenceObjectNode.asText());															
+														} else {
+															String external_Id = "NotFound";
+															JsonNode recordsNode = linkedObjectList.get("records"); 
+															if ((recordsNode!=null)&&(!recordsNode.isNull())) {
+																JsonNode supplierOrderLineNode = linkedObjectList.get("SupplierOrderLine__r"); 
+																if ((supplierOrderLineNode!=null)&&(!supplierOrderLineNode.isNull())) {
+																	JsonNode supplierOrderNode = supplierOrderLineNode.get("CustomerOrder__r"); 
+																	if ((supplierOrderNode!=null)&&(!supplierOrderNode.isNull())) {
+																		JsonNode supplierExternalIdNode = supplierOrderNode.get("ExternalId__c"); 
+																		if ((supplierExternalIdNode!=null)&&(!supplierExternalIdNode.isNull())) {
+																			external_Id = supplierExternalIdNode.asText();
+																		}
+																	}
+																}
+															}
+															logger.warn("Supplier Order '" + external_Id + "' is linked to multiple customer order. Impossible to anonymized.");
 														}
 													}
 												}
@@ -915,7 +1150,7 @@ public class SalesForceAnonymizer {
 	}
 	
 	private SFSCCustomerOrder getCustomerOrders(String customerOrderId) throws JsonMappingException, JsonProcessingException {
-		logger.info ("Salesforce - get Customer Orders");
+		logger.info ("---- Salesforce - get Customer Orders");
 		
 		Callable<ResponseEntity<String>> job = sfscClient.getCustomerOrderByUuid (customerOrderId);
 		ResponseEntity<String> response = null;
@@ -944,6 +1179,7 @@ public class SalesForceAnonymizer {
 	public List<String> getCustomerOrderIds() {
 		return customerOrderUuids;
 	}
+	
 	public void anonymizeCustomerOrder(ClientPartiel clientItem) throws JsonMappingException, JsonProcessingException {
 		SFSCCustomerOrder order = getCustomerOrders(clientItem.getUuidCc());
 		if (order==null) {
@@ -955,4 +1191,30 @@ public class SalesForceAnonymizer {
 		}
 	}
 	
+	private void interpreteResponse(ReportType type, ClientEligible client, String body) throws JsonMappingException, JsonProcessingException {
+		JsonNode sourceCustomerOrderNode = mapper.readTree(body);
+		
+		JsonNode compositeResponseNode = sourceCustomerOrderNode.get("compositeResponse");
+		for (JsonNode linkedObjectList : compositeResponseNode) {
+			JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+			String reference = null;
+			if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+				reference = referenceObjectNode.asText();
+			}
+			JsonNode httpStatusCodeNode = linkedObjectList.get("httpStatusCode");
+			if ((httpStatusCodeNode!=null)&&(!httpStatusCodeNode.isNull())) {
+				reference = referenceObjectNode.asText();
+			}
+			
+			JsonNode bodyNode = linkedObjectList.get("body"); 
+			if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+				JsonNode doneNode = bodyNode.get("done"); 
+				if ((doneNode!=null)&&(!doneNode.isNull())) {
+					if (doneNode.asBoolean()) {
+						
+					}
+				}
+			}
+		}
+	}
 }

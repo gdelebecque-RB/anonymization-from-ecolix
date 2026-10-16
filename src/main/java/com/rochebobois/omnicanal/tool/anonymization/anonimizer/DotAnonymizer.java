@@ -54,7 +54,7 @@ public class DotAnonymizer {
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
-		logger.debug("Dot Responde : " + response.getBody());
+		logger.debug("Dot Response : " + response.getStatusCode() + " - " + response.getBody());
 
 	}
 }
