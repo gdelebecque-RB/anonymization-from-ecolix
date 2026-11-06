@@ -3,6 +3,8 @@ package com.rochebobois.omnicanal.tool.anonymization;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -17,11 +19,12 @@ import com.rochebobois.omnicanal.tool.anonymization.anonimizer.SalesForceAnonymi
 import com.rochebobois.omnicanal.tool.anonymization.domain.ClientEligible;
 import com.rochebobois.omnicanal.tool.anonymization.domain.ClientPartiel;
 import com.rochebobois.omnicanal.tool.anonymization.input.AnonymisationCsvReader;
+import com.rochebobois.omnicanal.tool.anonymization.report.ReportBook;
 
 public class AnonymizationFromEcolix {
 	private static final Logger logger = LoggerFactory.getLogger(AnonymizationFromEcolix.class);
 
-	public static final Environment currentEnv = Environment.Preprod;
+	public static Environment currentEnv = null;
 	
 	public static void main(String[] args) throws IOException, ApiClientException {
 		LocalDate referenceDate = null;
@@ -30,43 +33,50 @@ public class AnonymizationFromEcolix {
 		Boolean fullprocess = null;
 		
 		for (String arg : args) {
+			System.out.println("ARG : " + arg);
 			String key = null;
 			if (arg.length()>2) {
 				key = arg.substring(0, 2);
-			}
-			switch (key) {
-			case "-p":
-				
-				if (arg.substring(2).equals("Full")) fullprocess = true;
-				if (arg.substring(2).equals("Partial")) fullprocess = false;
-				
-			case "-f":
-				filePath = arg.substring(2);
-				break;
-			case "-d":
-				referenceDate = LocalDate.parse(arg.substring(2));
-				break;
-			case "-b":
-				ecolixBase = arg.substring(2);
-				break;
 
-			default:
-				logger.warn("The parameter is not recognized " + arg); 
-				break;
+				switch (key) {
+				case "-p":
+					
+					if (arg.substring(2).equals("Full")) fullprocess = true;
+					if (arg.substring(2).equals("Partial")) fullprocess = false;
+					
+				case "-f":
+					filePath = arg.substring(2);
+					break;
+				case "-d":
+					referenceDate = LocalDate.parse(arg.substring(2));
+					break;
+				case "-b":
+					ecolixBase = arg.substring(2);
+					break;
+				case "-e":
+					currentEnv = Environment.valueOf(arg.substring(2));
+					break;
+	
+				default:
+					logger.warn("The parameter is not recognized " + arg); 
+					break;
+				}
 			}
 		}
 		
-		if ((referenceDate==null)||(filePath==null)||(ecolixBase==null)||(fullprocess==null)) {
+		if ((currentEnv==null)||(referenceDate==null)||(filePath==null)||(ecolixBase==null)||(fullprocess==null)) {
 			logger.info("Missing argument. Use following : \n"
 					+ "-p<processType> values : Full / Partial \n"
 					+ "-f<FilePath> ex : -fc:\\directory\\filename.ext \n"
 					+ "-d<Reference Date> ex : -d2026-01-01\n"
 					+ "-b<Ecolix Base> ex : -b64005 (pour cote d'azur Dev)\n"
+					+ "-e<Environement> ex : ePreprod (values : Prod, Preprod, Dev)\n"
 					+ "");
 			System.exit(-1);
 		}
 		
 		logger.info("Progam runs with following parameters : \n"
+				+ "Environment : " + currentEnv + "\n"
 				+ "Reference Date : " + referenceDate + "\n"
 				+ "ProcessType : " + (fullprocess?"Full":"Partial") + "\n"
 				+ "File : " + filePath + "\n"
@@ -86,11 +96,9 @@ public class AnonymizationFromEcolix {
 				logger.info("Process  " + client.getCodeClient() + " => " + client.getPrenom() + " " + client.getNom());
 				sfAnonymizer.AnonymizeCustomer(client);
 				
-				myOrdersAnonymizer.AnonymizeCustomerCustomerOrders (client);
-				logger.info("Process " + client.getCodeClient() + " ended On " + referenceDate);
+//				myOrdersAnonymizer.AnonymizeCustomerCustomerOrders (client);
 				
-				logger.info("Unsubscribe email : " + client.getFormerEmail());
-				dqeAnonymizer.unsubscribe (client.getFormerEmail().trim());
+//				dqeAnonymizer.unsubscribe (client);
 
 			}
 			
@@ -118,7 +126,10 @@ public class AnonymizationFromEcolix {
 				}
 			}
 		}
-
+		
+        String reportFileName = "./reports/" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-hhmmss")) + ".csv";
+		ReportBook.getInstance().writeBook(Path.of(reportFileName));
+		
 	}
 
 

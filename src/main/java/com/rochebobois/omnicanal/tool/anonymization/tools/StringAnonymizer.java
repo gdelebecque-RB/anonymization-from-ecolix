@@ -34,6 +34,9 @@ public class StringAnonymizer {
 			return null;
 		}
 
+		if (length ==0) {
+			return"";
+		}
 		if (length < 1 || length > 64) {
 			throw new IllegalArgumentException("La longueur doit être comprise entre 1 et 64");
 		}

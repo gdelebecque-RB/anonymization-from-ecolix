@@ -4,6 +4,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -32,27 +34,26 @@ import com.rochebobois.omnicanal.sfsc.domain.SFSCCustomerOrder;
 import com.rochebobois.omnicanal.sfsc.domain.SFSCOpportunity;
 import com.rochebobois.omnicanal.sfsc.domain.SFSCQuote;
 import com.rochebobois.omnicanal.sfsc.domain.SFSCSupplierOrder;
-import com.rochebobois.omnicanal.tool.anonymization.AnonymizationFromEcolix;
 import com.rochebobois.omnicanal.tool.anonymization.domain.ClientEligible;
 import com.rochebobois.omnicanal.tool.anonymization.domain.ClientPartiel;
+import com.rochebobois.omnicanal.tool.anonymization.domain.sfsc.SFItemObject;
+import com.rochebobois.omnicanal.tool.anonymization.report.Report;
 import com.rochebobois.omnicanal.tool.anonymization.report.ReportBook;
-import com.rochebobois.omnicanal.tool.anonymization.report.ReportType;
+import com.rochebobois.omnicanal.tool.anonymization.report.ReportGravity;
+import com.rochebobois.omnicanal.tool.anonymization.tools.CompositeItem;
 
 public class SalesForceAnonymizer {
-	private static final Logger logger = LoggerFactory.getLogger(AnonymizationFromEcolix.class);
+	private static final Logger logger = LoggerFactory.getLogger(SalesForceAnonymizer.class);
 
 	private static SfscRestClient sfscClient = null;
 	private static ObjectMapper mapper = new ObjectMapper();
 
 	private Environment currentEnv = null;
 	private LocalDate referenceDate = null;
+	private ClientEligible currentCustomer = null;
+	
+	private Map<String, List<SFItemObject>> objectsItems = new HashMap<String, List<SFItemObject>>();
 
-	private Map<String,String> customerOrderIds = new HashMap<String, String>();
-	private Map<String,String> quoteIds = new HashMap<String, String>();
-	private Map<String,String> opportunityIds = new HashMap<String, String>();
-	private Map<String,String> caseIds = new HashMap<String, String>();
-	private Map<String,String> historyIds = new HashMap<String, String>();
-	private Map<String,String> emailIds = new HashMap<String, String>();
 	private List<String> customerOrderUuids = new ArrayList<String>();
 	private List<String> supplierOrderIds = new ArrayList<String>();
 
@@ -64,12 +65,13 @@ public class SalesForceAnonymizer {
 		sfscClient = new SfscRestClient(sfscParam);
 	}
 	
-	public static final String CustomerOrdersReference = "CustomerOrders";
-	public static final String QuotesReference = "Quotes";
-	public static final String OpportunitiesReference = "Opportunities";
+	public static final String CustomerOrdersReference = "CustomerOrder__c";
+	public static final String QuotesReference = "Quote__c";
+	public static final String OpportunitiesReference = "Opportunity";
 	public static final String CasesReference = "Cases";
-	public static final String CustomerHistoryReference = "History";
-	public static final String EmailReference = "Emails";
+	public static final String HistoryObject = "AccountHistory";
+	public static final String EmailReference = "EmailMessage";
+	public static final String CommunicationReference = "Communication__c";
 
 	private void setCurrentEnv(Environment currentEnv) {
 		this.currentEnv = currentEnv;
@@ -84,17 +86,27 @@ public class SalesForceAnonymizer {
 	
 	
 	public void AnonymizeCustomer (ClientEligible client) throws JsonMappingException, JsonProcessingException {
+		currentCustomer = client;
+		
 		logger.info ("Salesforce - Search Customer : " + client.getCodeClient() + " - " + client.getNom() + " - " + client.getEmail() + " - " + client.getUuid());
 		
 		Callable<ResponseEntity<String>> job = sfscClient.getCustomer(client.getUuid());
+		
 		ResponseEntity<String> response = null;
 		try {
 			response = job.call();
 		} catch (Exception e) {
-			// TODO Auto-generated catch block
+			logger.debug ("---- Salesforce Response - " + "Search Customer" + " - FAILED - " + e.getMessage());
+			ReportBook.getInstance().addReport (new Report(client, "Salesforce" ,  "Customer", client.getCodeClient(), client.getUuid(), ReportGravity.ERROR, e.getMessage()));
 			e.printStackTrace();
 		}
-		
+		if (response.getStatusCode()==HttpStatus.OK ) {
+			logger.info ("---- Salesforce Response - " + "Search Customer" + " - SUCCESS - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+		} else {
+			logger.error ("---- Salesforce Response - " + "Search Customer" + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );
+			ReportBook.getInstance().addReport (new Report(client, "Salesforce" , "Customer", client.getCodeClient(), client.getUuid(), ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "")));
+		}
+				
 		if (response.getStatusCode()==HttpStatus.OK) {
 			
 			logger.debug (response.getBody());
@@ -151,6 +163,7 @@ public class SalesForceAnonymizer {
 			sfscCustomer.setCompanyName(client.getNom());
 			sfscCustomer.setNationalRegistrationNumber(null);
 
+
 			sfscCustomer.setAnonymizationDate(referenceDate);
 			sfscCustomer.setAnonymizationStatus(AnonymizationStatusEnum.Anonymized);
 			sfscCustomer.setAnonymizationTargetDate(referenceDate);
@@ -170,8 +183,7 @@ public class SalesForceAnonymizer {
 			sfscCustomer.setOptinPostalModifiedDate(LocalDate.now());
 			sfscCustomer.setOptinSMSModifiedDate(LocalDate.now());
 			
-			sfscCustomer.setAnonymizationStatus(AnonymizationStatusEnum.Anonymized);
-			sfscCustomer.setAnonymizationDate(referenceDate);
+
 			
 			logger.info ("- Salesforce - Update Customer");
 			logger.debug (sfscCustomer.toString());
@@ -180,25 +192,30 @@ public class SalesForceAnonymizer {
 			try {
 				response = job.call();
 			} catch (Exception e) {
-				// TODO Auto-generated catch block
+				logger.debug ("---- Salesforce Response - " + "Update Customer" + " - FAILED - " + e.getMessage());
+				ReportBook.getInstance().addReport (new Report(client,  "Salesforce" , "Customer", client.getCodeClient(), client.getUuid(), ReportGravity.ERROR, e.getMessage()));
 				e.printStackTrace();
 			}
 			
 			if (response.getStatusCode()!=HttpStatus.OK) {
-				logger.error ("-> Salesforce - Update Customer FAILED : " + response.getBody());				
+				logger.error ("---- Salesforce Response - " + "Update Customer" + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );
+				ReportBook.getInstance().addReport (new Report(client,  "Salesforce" , "Customer", client.getCodeClient(), client.getUuid(), ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "")));
 			} else {
-				ReportBook.Customer (client.getUuid());
-				
-				logger.debug ("-> Salesforce - Update Customer response : " + response.getBody());
+				logger.info ("-> Salesforce Response - " + "Update Customer" + " - SUCCESS - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+				ReportBook.getInstance().addReport (new Report(client,  "Salesforce" , "Customer", client.getCodeClient(), client.getUuid(), ReportGravity.OK, null));
+			}
+			{
 				JsonNode sfscCustomerUpdateResponseNode = mapper.readTree(response.getBody());
 				
 				JsonNode SfAccountIdNode = sfscCustomerUpdateResponseNode.get("SfAccountId");
+				
 				if ((SfAccountIdNode!=null)&&!(SfAccountIdNode.isNull())) {
 					String CustomerAccountId = SfAccountIdNode.asText();
 					
-					Map<String, String> requests = new HashMap<String, String>();
+					Map<String, CompositeItem> compositeItems = new HashMap<String, CompositeItem>();
 					
-					requests.put(CustomerOrdersReference , "{\r\n"
+					compositeItems.put(CustomerOrdersReference, new CompositeItem("Customer Order", CustomerOrdersReference,
+							"{\r\n"
 							+ "    \"allOrNone\": false,\r\n"
 							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
@@ -207,9 +224,10 @@ public class SalesForceAnonymizer {
 							+ "      \"referenceId\": \"" + CustomerOrdersReference + "\"\r\n"
 							+ "    }"
 							+ "   ]\r\n"
-							+ "}");
+							+ "}"));
 					
-					requests.put(QuotesReference, "{\r\n"
+					compositeItems.put(QuotesReference, new CompositeItem("Quote__c", QuotesReference, 
+							"{\r\n"
 							+ "    \"allOrNone\": false,\r\n"
 							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
@@ -218,9 +236,10 @@ public class SalesForceAnonymizer {
 							+ "      \"referenceId\": \""+QuotesReference+"\"\r\n"
 							+ "    }\r\n"
 							+ "   ]\r\n"
-							+ "}");
+							+ "}"));
 					
-					requests.put(OpportunitiesReference, "{\r\n"
+					compositeItems.put(OpportunitiesReference, new CompositeItem("Opportunity", OpportunitiesReference, 
+							"{\r\n"
 							+ "    \"allOrNone\": false,\r\n"
 							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
@@ -229,9 +248,10 @@ public class SalesForceAnonymizer {
 							+ "      \"referenceId\": \""+OpportunitiesReference+"\"\r\n"
 							+ "    }\r\n"
 							+ "   ]\r\n"
-							+ "}");
+							+ "}"));
 
-					requests.put(CasesReference, "{\r\n"
+					compositeItems.put(CasesReference, new CompositeItem("Case", CasesReference, 
+							"{\r\n"
 							+ "    \"allOrNone\": false,\r\n"
 							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
@@ -240,20 +260,22 @@ public class SalesForceAnonymizer {
 							+ "      \"referenceId\": \""+CasesReference+"\"\r\n"
 							+ "    }\r\n"
 							+ "   ]\r\n"
-							+ "}");
+							+ "}"));
 
-					requests.put(CustomerHistoryReference, "{\r\n"
+					compositeItems.put(HistoryObject, new CompositeItem("AccountHistory", HistoryObject, 
+							"{\r\n"
 							+ "    \"allOrNone\": false,\r\n"
 							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
 							+ "      \"method\": \"GET\",\r\n"
 							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id, Field, OldValue, NewValue, CreatedDate FROM AccountHistory WHERE AccountId = '" + CustomerAccountId + "'  AND Field in ('FirstName', 'LastName', 'Salutation', 'PersonEmail', 'Email', 'BillingStreet', 'BillingCity', 'BillingPostalCode', 'ShippingStreet', 'ShippingCity', 'ShippingPostalCode', 'PersonHomePhone', 'PersonMobilePhone')\",\r\n"
-							+ "      \"referenceId\": \""+CustomerHistoryReference+"\"\r\n"
+							+ "      \"referenceId\": \""+HistoryObject+"\"\r\n"
 							+ "    }\r\n"
 							+ "   ]\r\n"
-							+ "}");
+							+ "}"));
 
-					requests.put(EmailReference, "{\r\n"
+					compositeItems.put(EmailReference, new CompositeItem("EmailMessage", EmailReference, 
+							"{\r\n"
 							+ "    \"allOrNone\": false,\r\n"
 							+ "    \"compositeRequest\": [\r\n"
 							+ "{\r\n"
@@ -262,24 +284,37 @@ public class SalesForceAnonymizer {
 							+ "      \"referenceId\": \""+EmailReference+"\"\r\n"
 							+ "    }\r\n"
 							+ "   ]\r\n"
-							+ "}");
+							+ "}"));
 					
-					for (Entry<String, String> requestEntry : requests.entrySet()) {
-						logger.debug ("-- Salesforce - Get Customer Objets : " + requestEntry.getValue().replace("\n","").replace("\r",""));
-						job = sfscClient.callComposite(requestEntry.getValue());
+					compositeItems.put(CommunicationReference, new CompositeItem("Communication__c", CommunicationReference, 
+							"{\r\n"
+							+ "    \"allOrNone\": false,\r\n"
+							+ "    \"compositeRequest\": [\r\n"
+							+ "{\r\n"
+							+ "      \"method\": \"GET\",\r\n"
+							+ "      \"url\": \"/services/data/v61.0/query?q=SELECT Id FROM Communication__c WHERE Account__c='" + CustomerAccountId + "'\",\r\n"
+							+ "      \"referenceId\": \""+CommunicationReference+"\"\r\n"
+							+ "    }\r\n"
+							+ "   ]\r\n"
+							+ "}"));
+					
+					for (Entry<String, CompositeItem> requestEntry : compositeItems.entrySet()) {
+						job = sfscClient.callComposite(requestEntry.getValue().getRequest());
 						response = null;
 						try {
 							response = job.call();
 						} catch (Exception e) {
-							// TODO Auto-generated catch block
+							logger.error ("---- Salesforce Response - Get " + requestEntry.getKey() + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );
+							ReportBook.getInstance().addReport (new Report(client, "Salesforce" ,  "Customer", client.getCodeClient(), client.getUuid(), ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "")));
 							e.printStackTrace();
 						}
 						
 						
 						if (response.getStatusCode()!=HttpStatus.OK) {
-							logger.error ("-- Salesforce - Get Customer " + requestEntry.getKey() + " FAILED" + response.getStatusCode() + "\n" + response.getBody() );
+							logger.error ("-- Salesforce Response - Get " + requestEntry.getKey() + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );
+							ReportBook.getInstance().addReport (new Report(client, "Salesforce" ,  "Customer", requestEntry.getKey(), "", ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "")));
 						} else {
-							logger.debug ("-- Salesforce - Get Customer " + requestEntry.getKey() + " OK : " + response.getBody());
+							logger.info ("-- Salesforce Response - Get " + requestEntry.getKey() + " - SUCCESS - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );
 							
 							JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 							
@@ -292,35 +327,56 @@ public class SalesForceAnonymizer {
 										JsonNode recordsNode = bodyNode.get("records"); 
 										if ((recordsNode!=null)&&(!recordsNode.isNull())) {
 											for (JsonNode recordNode : recordsNode) {
-												JsonNode idNode = recordNode.get("Id");
-												String url = null;
-												if ((idNode!=null)&&(!idNode.isNull())) {
-													JsonNode attributeNode = recordNode.get("attributes");
-													if ((attributeNode!=null)&&(!attributeNode.isNull())) {
-														JsonNode urlNode = attributeNode.get("url");
-														if ((urlNode!=null)&&(!urlNode.isNull())) {
-															url = urlNode.asText();
-														}
-													}
-													if (referenceObjectNode.asText().equals(CustomerOrdersReference)) {
-														customerOrderIds.put(idNode.asText(),url);
-													}
-													if (referenceObjectNode.asText().equals(QuotesReference)) {
-														quoteIds.put(idNode.asText(),url);
-													}
-													if (referenceObjectNode.asText().equals(OpportunitiesReference)) {
-														opportunityIds.put(idNode.asText(),url);
-													}
-													if (referenceObjectNode.asText().equals(CasesReference)) {
-														caseIds.put(idNode.asText(),url);
-													}
-													if (referenceObjectNode.asText().equals(CustomerHistoryReference)) {
-														historyIds.put(idNode.asText(),url);
-													}
-													if (referenceObjectNode.asText().equals(EmailReference)) {
-														emailIds.put(idNode.asText(),url);
-													}
+												
+												SFItemObject crObject = null;
+												try {
+													crObject = SFItemObject.getResponseObject(recordNode);
+												} catch (Exception e) {
+													e.printStackTrace();
 												}
+												if (crObject!=null) {
+													List<SFItemObject> list = objectsItems.get(crObject.getType());
+													if (list==null) {
+														list = new LinkedList<SFItemObject>();
+														objectsItems.put(crObject.getType(), list);
+													}
+													list.add (crObject);													
+												}
+												
+												
+												
+//												JsonNode idNode = recordNode.get("Id");
+//												String url = null;
+//												if ((idNode!=null)&&(!idNode.isNull())) {
+//													JsonNode attributeNode = recordNode.get("attributes");
+//													if ((attributeNode!=null)&&(!attributeNode.isNull())) {
+//														JsonNode urlNode = attributeNode.get("url");
+//														if ((urlNode!=null)&&(!urlNode.isNull())) {
+//															url = urlNode.asText();
+//														}
+//													}
+//													if (referenceObjectNode.asText().equals(CustomerOrdersReference)) {
+//														customerOrderIds.put(idNode.asText(),url);
+//													}
+//													if (referenceObjectNode.asText().equals(QuotesReference)) {
+//														quoteIds.put(idNode.asText(),url);
+//													}
+//													if (referenceObjectNode.asText().equals(OpportunitiesReference)) {
+//														opportunityIds.put(idNode.asText(),url);
+//													}
+//													if (referenceObjectNode.asText().equals(CasesReference)) {
+//														caseIds.put(idNode.asText(),url);
+//													}
+////													if (referenceObjectNode.asText().equals(HistoryObject)) {
+////														historyIds.put(idNode.asText(),url);
+////													}
+//													if (referenceObjectNode.asText().equals(EmailReference)) {
+//														emailIds.put(idNode.asText(),url);
+//													}
+//													if (referenceObjectNode.asText().equals(CommunicationReference)) {
+//														communicationIds.put(idNode.asText(),url);
+//													}
+//												}
 											}
 										}
 									}
@@ -329,23 +385,34 @@ public class SalesForceAnonymizer {
 						}						
 					}
 					
-					List <SFSCCustomerOrder> customerOrderList = getAllCustomerOrders (customerOrderIds);
+					List<SFItemObject> sfcolist = objectsItems.get(CustomerOrdersReference);
+					List <SFSCCustomerOrder> customerOrderList = getAllCustomerOrders (sfcolist);
 					anonymiseCustomerOrders (client, customerOrderList);
 					
-					List <SFSCQuote> quoteList = getAllQuotes (quoteIds);
+					List<SFItemObject> qlist = objectsItems.get(QuotesReference);
+					List <SFSCQuote> quoteList = getAllQuotes (qlist);
 					anonymiseQuotes (client, quoteList);
 
-					List <SFSCOpportunity> opportunityList = getAllOpportunities(opportunityIds);
+					List<SFItemObject> olist = objectsItems.get(OpportunitiesReference);
+					List <SFSCOpportunity> opportunityList = getAllOpportunities (olist);
 					anonymiseOpportunities (client, opportunityList);
 					
-					List <SFSCCase> caseList = getAllCases(caseIds);
-					anonymiseCases (client, caseList);
+					List<SFItemObject> clist = objectsItems.get(CasesReference);
+					List <SFSCCase> caseList = getAllCases (clist);
+					anonymiseCases (caseList);
 					
 					fillSupplierOrderList (customerOrderList);
 					anonymiseSupplierOrders(client, supplierOrderIds);
 					
-					deleteActivity (historyIds);
-					deleteEmails (emailIds);
+					
+					List<SFItemObject> historyList = objectsItems.get(HistoryObject);
+					deleteHistory (historyList);
+					
+					List<SFItemObject> emailList = objectsItems.get(EmailReference);
+					deleteEmails (emailList);
+					
+					List<SFItemObject> communicationList = objectsItems.get(CommunicationReference);					
+					deleteCommunications (communicationList);
 
 				}
 			}
@@ -355,143 +422,157 @@ public class SalesForceAnonymizer {
 		}
 	}
 	
-	private void deleteActivity(Map<String, String> historyIds) throws JsonMappingException, JsonProcessingException {
+	private void deleteHistory (List<SFItemObject> historyIds) throws JsonMappingException, JsonProcessingException {
+		if (historyIds==null) return;
 		if (historyIds.size()==0) return;
 		
-		logger.info ("---- Salesforce - Delete " + historyIds.size() + " Activities");
+		logger.info ("--- Salesforce - Delete " + historyIds.size() + " History");
 		
-		List<String> compositeCalls = new ArrayList<String>();
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
 
-		for (Entry<String, String> entry : historyIds.entrySet()) {
-			
-			compositeCalls.add  ("{"
+		for (SFItemObject entry : historyIds) {
+
+			compositeCalls.put  (entry.getId() , new CompositeItem (HistoryObject , entry.getId(), entry ,
+					"{"
 					+ "\"method\": \"DELETE\"," 
-					+ "\"url\": \"" + entry.getValue() + "\","
-					+ "\"referenceId\": \"" + entry.getKey() + "\""
-					+ "}");
+					+ "\"url\": \"" + entry.getUrl() + "\","
+					+ "\"referenceId\": \"" + entry.getId() + "\""
+					+ "}"));
 		}
 
 		if (compositeCalls.size()>0) {
-			List<ResponseEntity<String>> responses = sfscClient.callComposite(compositeCalls);
-			
-			for (ResponseEntity<String> response : responses) {
-				if (response.getStatusCode()==HttpStatus.OK ) {
-					logger.info ("----> Salesforce Response - Activities Deleted - End - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
-				} else {
-					logger.error ("----> Salesforce Response - Activities - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
-				}				
-			}
+			callCompositeItems(compositeCalls, 24, "History" );
 		}
 	}
 	
-	private void deleteEmails(Map<String, String> emailIds) throws JsonMappingException, JsonProcessingException {
-		if (emailIds.size()==0) return;
+	private void deleteEmails(List<SFItemObject> sfItemObjectList) throws JsonMappingException, JsonProcessingException {
+		if (sfItemObjectList==null) return;
+		if (sfItemObjectList.size()==0) return;
 		
-		String composite = "";
-		logger.info ("---- Salesforce - Delete " + emailIds.size() + " Emails");
-		for (Entry<String, String> entry : emailIds.entrySet()) {
+		logger.info ("--- Salesforce - Delete " + sfItemObjectList.size() + " Emails");
+		
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+		for (SFItemObject entry : sfItemObjectList) {
 			
-			composite += ",{"
+			compositeCalls.put  (entry.getId() , new CompositeItem ("Emails" , entry.getId() , entry,
+					"{"
 					+ "\"method\": \"DELETE\"," 
-					+ "\"url\": \"" + entry.getValue() + "\","
-					+ "\"referenceId\": \"" + entry.getKey() + "\""
-					+ "}";
+					+ "\"url\": \"" + entry.getUrl() + "\","
+					+ "\"referenceId\": \"" + entry.getId() + "\""
+					+ "}"));
 		}
-		
-		composite = "{\r\n"
-				+ "    \"allOrNone\": false,\r\n"
-				+ "    \"compositeRequest\": [\r\n"
-				+ composite.substring(1)
-				+ "   ]\r\n"
-				+ "}";
 
-		logger.debug ("Batch : \n" + composite);
+		callCompositeItems(compositeCalls, 24, "Emails");
+
+	}
+	
+//	private void deleteEmails(Map<String, String> emailIds) throws JsonMappingException, JsonProcessingException {
+//		if (emailIds.size()==0) return;
+//		
+//		logger.info ("---- Salesforce - Delete " + emailIds.size() + " Emails");
+//		
+//		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+//		for (Entry<String, String> entry : emailIds.entrySet()) {
+//			
+//			compositeCalls.put  (entry.getKey() , new CompositeItem ("Emails" , entry.getKey() , 
+//					"{"
+//					+ "\"method\": \"DELETE\"," 
+//					+ "\"url\": \"" + entry.getValue() + "\","
+//					+ "\"referenceId\": \"" + entry.getKey() + "\""
+//					+ "}"));
+//		}
+//
+//		callCompositeItems(compositeCalls, 24, "Emails");
+//
+//	}
+//	
+	
+	private void deleteCommunications(List<SFItemObject> sfItemObjectList) throws JsonMappingException, JsonProcessingException {
+		if (sfItemObjectList==null) return;
+		if (sfItemObjectList.size()==0) return;
 		
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			logger.debug ("---- Salesforce Response - DELETE Emails - FAILED - " + e.getMessage());				
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+		logger.info ("---- Salesforce Request - DELETE " + sfItemObjectList.size() + " Emails");
+		for (SFItemObject entry : sfItemObjectList) {
+			
+			compositeCalls.put(entry.getId(), new CompositeItem ("Communication", entry.getId(), entry,
+					"{"
+					+ "\"method\": \"DELETE\"," 
+					+ "\"url\": \"" + entry.getUrl() + "\","
+					+ "\"referenceId\": \"" + entry.getId() + "\""
+					+ "}"));
 		}
-		if (response.getStatusCode()==HttpStatus.OK ) {
-			logger.info ("---- Salesforce Response - Emails Deleted - End - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
-		} else {
-			logger.error ("---- Salesforce Response - Emails - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
-		}
+		
+		callCompositeItems (compositeCalls, 24, "Communication");
+
 	}
 	
 	
-	private void anonymiseCases(ClientEligible client, List<SFSCCase> caseList) throws JsonMappingException, JsonProcessingException {
+//	private void deleteCommunications(Map<String, String> emailIds) throws JsonMappingException, JsonProcessingException {
+//		if (emailIds.size()==0) return;
+//		
+//		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+//		logger.info ("---- Salesforce Request - DELETE " + emailIds.size() + " Emails");
+//		for (Entry<String, String> entry : emailIds.entrySet()) {
+//			
+//			compositeCalls.put(entry.getKey(), new CompositeItem ("Communication", entry.getKey(), "{"
+//					+ "\"method\": \"DELETE\"," 
+//					+ "\"url\": \"" + entry.getValue() + "\","
+//					+ "\"referenceId\": \"" + entry.getKey() + "\""
+//					+ "}"));
+//		}
+//		
+//		callCompositeItems (compositeCalls, 24, "Communication");
+//
+//	}
+//	
+	
+	private void anonymiseCases(List<SFSCCase> caseList) throws JsonMappingException, JsonProcessingException {
+		if (caseList==null) return;
 		if (caseList.size()==0) return;
 		
-		String composite = "";
 		logger.info ("---- Salesforce - Anonymise " + caseList.size() + " Cases");
-		
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+
 		for (SFSCCase sfscCase : caseList) {
-			sfscCase.setSubject(client.getPrenom() + client.getNom());
+			sfscCase.setSubject(currentCustomer.getPrenom() + currentCustomer.getNom());
 			
-			composite += ",{"
+			compositeCalls.put(sfscCase.getId(), new CompositeItem ( "Case" ,sfscCase.getId() , sfscCase,
+					"{"
 					+ "\"method\": \"PATCH\"," 
-					+ "\"url\": \"/services/data/v61.0/sobjects/Opportunity/" + sfscCase.getId() + "\","
+					+ "\"url\": \"/services/data/v61.0/sobjects/Case/" + sfscCase.getId() + "\","
 					+ "\"referenceId\": \"" + sfscCase.getId() + "\","
 					+ "\"body\": {"
 					+ "\"Subject\":\""+sfscCase.getSubject()+"\""
 					+ "}"
-					+ "}";
+					+ "}"));
 		}
 		
-		composite = "{\r\n"
-				+ "    \"allOrNone\": false,\r\n"
-				+ "    \"compositeRequest\": [\r\n"
-				+ composite.substring(1)
-				+ "   ]\r\n"
-				+ "}";
+		callCompositeItems(compositeCalls, 24, "Cases");
 
-		logger.debug ("---- Salesforce - Anonymise Cases" + composite.replace("\n", "").replace("\r", ""));
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		logger.debug ("---- Salesforce Response - Anonymise Cases - End - " + response.getStatusCode());			
 	}
 	private void anonymiseOpportunities(ClientEligible client, List<SFSCOpportunity> opportunityList) throws JsonMappingException, JsonProcessingException {
 		if (opportunityList.size()==0) return;
 		
-		String composite = "";
-		logger.info ("---- Salesforce - Anonymise " + opportunityList.size() + " Opportunities");
+		logger.info ("--- Salesforce - Anonymise " + opportunityList.size() + " Opportunities");
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+
 		for (SFSCOpportunity sfscOpportunity : opportunityList) {
 			sfscOpportunity.setName(client.getPrenom() + client.getNom());
 			
-			composite += ",{"
+			compositeCalls.put(sfscOpportunity.getId(), new CompositeItem ( "Opportunity" ,sfscOpportunity.getId() , sfscOpportunity , 
+					"{"
 					+ "\"method\": \"PATCH\"," 
 					+ "\"url\": \"/services/data/v61.0/sobjects/Opportunity/" + sfscOpportunity.getId() + "\","
 					+ "\"referenceId\": \"" + sfscOpportunity.getId() + "\","
 					+ "\"body\": {"
 					+ "\"Name\":\""+sfscOpportunity.getName()+"\""
 					+ "}"
-					+ "}";
+					+ "}") );
 		}
 		
-		composite = "{\r\n"
-				+ "    \"allOrNone\": false,\r\n"
-				+ "    \"compositeRequest\": [\r\n"
-				+ composite.substring(1)
-				+ "   ]\r\n"
-				+ "}";
+		callCompositeItems(compositeCalls, 24, "Opportunities");
 
-		logger.debug ("---- Salesforce - Anonymise Opportunities" + composite.replace("\n", "").replace("\r", ""));
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		logger.debug ("---- Salesforce Response - Anonymise Opportunity - End - " + response.getStatusCode());		
 	}
 
 	public void anonymizeQuote(ClientPartiel item) throws JsonMappingException, JsonProcessingException {
@@ -506,8 +587,9 @@ public class SalesForceAnonymizer {
 	private void anonymiseQuotes(ClientEligible client, List<SFSCQuote> quoteList) throws JsonMappingException, JsonProcessingException {
 		if (quoteList.size()==0) return;
 		
-		logger.info ("---- Salesforce - Anonymise " + quoteList.size() + " Quotes");
-		String composite = "";
+		logger.info ("--- Salesforce - Anonymise " + quoteList.size() + " Quotes");
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+
 		for (SFSCQuote sfscQuote : quoteList) {
 			sfscQuote.setInternalObservations__c("");
 			sfscQuote.setShippingMainPhone__c (client.getTelephone1());
@@ -551,46 +633,58 @@ public class SalesForceAnonymizer {
 			
 			sfscQuote.setObservations__c("");
 			sfscQuote.setInternalObservations__c("");
-			
-			composite += ",{"
-					
+
+			compositeCalls.put(sfscQuote.getId(), new CompositeItem ( "Case" ,sfscQuote.getId() , sfscQuote,
+					"{"
 					+ "\"method\": \"PATCH\"," 
 					+ "\"url\": \"/services/data/v61.0/sobjects/Quote__c/" + sfscQuote.getId() + "\","
 					+ "\"referenceId\": \"" + sfscQuote.getId() + "\","
 					+ "\"body\": "
 					+ sfscQuote.toPayload()
-					+ "}";
+					+ "}"));
 		}
 		
-		composite = "{\r\n"
-				+ "    \"allOrNone\": false,\r\n"
-				+ "    \"compositeRequest\": [\r\n"
-				+ composite.substring(1)
-				+ "   ]\r\n"
-				+ "}";
+		callCompositeItems(compositeCalls, 24, "Cases");
 
-		logger.debug ("---- Salesforce - Anonymise Quotes Request : " + composite.replace("\n", "").replace("\r", ""));
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-		logger.debug ("---- Salesforce Response - Anonymise Quote - End - " + response.getStatusCode());		
+//			composite += ",{"
+//					
+//					+ "\"method\": \"PATCH\"," 
+//					+ "\"url\": \"/services/data/v61.0/sobjects/Quote__c/" + sfscQuote.getId() + "\","
+//					+ "\"referenceId\": \"" + sfscQuote.getId() + "\","
+//					+ "\"body\": "
+//					+ sfscQuote.toPayload()
+//					+ "}";
+//		}
+//		
+//		composite = "{\r\n"
+//				+ "    \"allOrNone\": false,\r\n"
+//				+ "    \"compositeRequest\": [\r\n"
+//				+ composite.substring(1)
+//				+ "   ]\r\n"
+//				+ "}";
+//
+//		logger.debug ("---- Salesforce - Anonymise Quotes Request : " + composite.replace("\n", "").replace("\r", ""));
+//		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
+//		ResponseEntity<String> response = null;
+//		try {
+//			response = job.call();
+//		} catch (Exception e) {
+//			// TODO Auto-generated catch block
+//			e.printStackTrace();
+//		}
+//		logger.debug ("---- Salesforce Response - Anonymise Quote - End - " + response.getStatusCode() + " - " + response.getBody());		
 	}
 
 
 	private void anonymiseCustomerOrders(ClientEligible client, List<SFSCCustomerOrder> customerOrderList) throws JsonMappingException, JsonProcessingException {
 		if (customerOrderList.size()==0) {
-			logger.info ("Salesforce No Customer Orders to Anonymize");
+			logger.info ("---> Salesforce No Customer Orders to Anonymize");
 			return;
 		}
 		
-		logger.info ("---- Salesforce Anonymize " + customerOrderList.size() + " Customer Orders");
-
-		String composite = "";
+		logger.info ("--- Salesforce Anonymize " + customerOrderList.size() + " Customer Orders");
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+		
 		for (SFSCCustomerOrder sfscCustomerOrder : customerOrderList) {
 
 			customerOrderUuids.add(sfscCustomerOrder.getExternalId__c());
@@ -633,56 +727,38 @@ public class SalesForceAnonymizer {
 			sfscCustomerOrder.setObservations__c("");
 			sfscCustomerOrder.setInternalObservations__c("");
 			
-			composite += ",{"
+			compositeCalls.put(sfscCustomerOrder.getId(), new CompositeItem ( "Customer Order" ,sfscCustomerOrder.getId() , sfscCustomerOrder,
+					"{"
 					+ "\"method\": \"PATCH\"," 
 					+ "\"url\": \"/services/data/v61.0/sobjects/CustomerOrder__c/" + sfscCustomerOrder.getId() + "\","
 					+ "\"referenceId\": \"" + sfscCustomerOrder.getId() + "\","
 					+ "\"body\": "
 					+ sfscCustomerOrder.toPayload()
-					+ "}";
+					+ "}"));
 			
 		}
-		
-		composite = "{\r\n"
-				+ "    \"allOrNone\": false,\r\n"
-				+ "    \"compositeRequest\": [\r\n"
-				+ composite.substring(1)
-				+ "   ]\r\n"
-				+ "}";
 
-		logger.debug ("---- Salesforce Anonymize Customer Orders Request : " + composite.replace("\n", "").replace("\r", ""));
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			e.printStackTrace();
-			logger.error ("---- Salesforce Response - Anonymise customer orders - FAILED - " + e.getMessage());
-		}
-		if (response.getStatusCode()==HttpStatus.OK) {
-			logger.info ("---- Salesforce Response - Anonymise customer orders - Response - " + response.getStatusCode() + " - " + response.getBody());
-			interpreteResponse (ReportType.CustomerOrder, client, response.getBody());
-		} else {
-			logger.error ("---- Salesforce Response - Anonymise customer orders - FAILED - " + response.getStatusCode() + " - " + response.getBody());
-		}
+		callCompositeItems(compositeCalls, 24, "Customer Order");
 		
 	}
 
 
 	private void anonymiseSupplierOrders(ClientEligible client, List<String> supplierOrderIds) throws JsonMappingException, JsonProcessingException {
-		logger.info ("---- Salesforce Anonymize " + supplierOrderIds.size() + " Supplier Orders");
+		logger.info ("--- Salesforce Anonymize " + supplierOrderIds.size() + " Supplier Orders");
 		
-		List<String> compositeCalls = new ArrayList<String>();
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+
 		for (String supplierOrderId : supplierOrderIds) {
-			compositeCalls.add("        {\r\n"
+			compositeCalls.put (supplierOrderId , new CompositeItem ("SupplierOrder" , supplierOrderId ,
+					"        {\r\n"
 					+ "            \"method\": \"GET\",\r\n"
 					+ "            \"url\": \"/services/data/v61.0/sobjects/SupplierOrder__c/" + supplierOrderId + "\",\r\n"
 					+ "            \"referenceId\": \""+supplierOrderId+"\"\r\n"
-					+ "        }");
+					+ "        }"));
 		}
 		
 		if (compositeCalls.size()>0) {
-			List<ResponseEntity<String>> responses = sfscClient.callComposite(compositeCalls);
+			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls, 24 , "Get Supplier Orders", true);
 		
 			List<SFSCSupplierOrder> supplierOrders = new ArrayList<SFSCSupplierOrder>();
 			
@@ -707,44 +783,23 @@ public class SalesForceAnonymizer {
 				}
 			}
 			
-			String composite = "";
-
+			compositeCalls = new LinkedHashMap<String, CompositeItem>();
+			
 			for (SFSCSupplierOrder sfscSupplierOrder : supplierOrders) {
 				sfscSupplierOrder.setName(client.getPrenom() + client.getNom());
 				
-				composite += ",{"
+				compositeCalls.put (sfscSupplierOrder.getId(), new CompositeItem ("SupplierOrder" , sfscSupplierOrder.getId() , sfscSupplierOrder,
+						"{"
 						+ "\"method\": \"PATCH\"," 
 						+ "\"url\": \"/services/data/v61.0/sobjects/SupplierOrder__c/" + sfscSupplierOrder.getId() + "\","
 						+ "\"referenceId\": \"" + sfscSupplierOrder.getId() + "\","
 						+ "\"body\": {"
 						+ "\"Name\":\""+sfscSupplierOrder.getName()+"\""
 						+ "}"
-						+ "}";
+						+ "}"));
 			}
 			
-			composite = "{\r\n"
-					+ "    \"allOrNone\": false,\r\n"
-					+ "    \"compositeRequest\": [\r\n"
-					+ composite.substring(1)
-					+ "   ]\r\n"
-					+ "}";
-
-			logger.debug ("----> Salesforce Anonymise Supplier Orders - Request : " + composite.replace("\n", "").replace("\r", ""));
-
-			Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-			ResponseEntity<String> response = null;
-			try {
-				response = job.call();
-			} catch (Exception e) {
-				logger.error ("---- Salesforce Response - Anonymise SupplierOrders - FAILED - " + e.getMessage());
-				e.printStackTrace();
-			}
-			if (response.getStatusCode()==HttpStatus.OK) {
-				logger.info ("---- Salesforce Response - Anonymise SupplierOrders - Response - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));
-				interpreteResponse (ReportType.SupplierOrder, client, response.getBody());
-			} else {
-				logger.error ("---- Salesforce Response - Anonymise SupplierOrders - FAILED - " + response.getStatusCode() + " - " + response.getBody());
-			}
+			callCompositeItems(compositeCalls, 24 , "Supplier Order");
 		}
 	}
 
@@ -775,166 +830,243 @@ public class SalesForceAnonymizer {
 		return null;
 	}
 	
-	private List<SFSCQuote> getAllQuotes(Map<String, String> quoteIds) throws JsonMappingException, JsonProcessingException {
-		String composite = "";
+	private List<SFSCQuote> getAllQuotes(List<SFItemObject> sfItemObjectList) throws JsonMappingException, JsonProcessingException {
+		if (sfItemObjectList==null) {
+			logger.info ("--- Salesforce No Quote found");
+			return new ArrayList<SFSCQuote>();
+		}
+		logger.info ("--- Salesforce Get " + sfItemObjectList.size() + " Quotes");
+		
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
 		List<SFSCQuote> quoteList = new ArrayList<SFSCQuote>();
-		for (Entry<String, String> customerOrderItem : quoteIds.entrySet()) {
-			composite += ",{\"method\": \"GET\",\"url\": \""+customerOrderItem.getValue()+"\",\"referenceId\": \""+ customerOrderItem.getKey() +"\"}";
+		for (SFItemObject quoteItem : sfItemObjectList) {
+			compositeCalls.put(quoteItem.getId(), new CompositeItem ("Quote" , quoteItem.getId() , quoteItem,
+					"{\"method\": \"GET\",\"url\": \""+quoteItem.getUrl()+"\",\"referenceId\": \""+ quoteItem.getId() +"\"}"));
 		}
 		
-		logger.debug("---- Salesforce Anonymize Quotes");		
-		if (composite.length()==0) {
+		if (compositeCalls.size()==0) {
 			return quoteList;
 		} else {
-			composite = "{\r\n"
-					+ "    \"allOrNone\": false,\r\n"
-					+ "    \"compositeRequest\": [\r\n"
-					+ composite.substring(1)
-					+ "   ]\r\n"
-					+ "}";
-		}
-		logger.debug("---- Salesforce Anonymize Quotes Request :" + composite.replace("\n","").replace("\r",""));
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-
-		if (response.getStatusCode()==HttpStatus.OK) {
-			logger.debug (response.getBody());
+			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls, 24 , "Get Quote", true);
 			
-			JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
-			
-			JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
-			for (JsonNode linkedObjectList : compositeResponseNode) {
-				JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-				if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-					JsonNode bodyNode = linkedObjectList.get("body"); 
-					if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-						SFSCQuote quote = SFSCCustomerHelper.getInstance().getSFSCQuote(bodyNode);
-						quoteList.add(quote);
+			for (ResponseEntity<String> response : responses) {
+				if (response.getStatusCode()==HttpStatus.OK) {
+					logger.debug ("---> Salesforce Get Quotes Response : " + response.getBody());
+					
+					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+					
+					JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+					for (JsonNode linkedObjectList : compositeResponseNode) {
+						JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+						if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+							JsonNode bodyNode = linkedObjectList.get("body"); 
+							if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+								SFSCQuote quote = SFSCCustomerHelper.getInstance().getSFSCQuote(bodyNode);
+								quoteList.add(quote);
+							}
+						}
 					}
-				}
+				}			
 			}
 		}
-		return quoteList;
+		return quoteList;		
 	}
 
-	private List<SFSCCase> getAllCases(Map<String, String> caseIds) throws JsonMappingException, JsonProcessingException {
-		String composite = "";
+	private List<SFSCCase> getAllCases(List<SFItemObject> sfItemObjectList) throws JsonMappingException, JsonProcessingException {
+		if (sfItemObjectList==null) {
+			logger.info ("--- Salesforce No Case found");
+			return new ArrayList<SFSCCase>();
+		}
+		logger.info ("--- Salesforce Get " + sfItemObjectList.size() + " Cases");
 		
-		logger.info ("---- Salesforce Get " + caseIds.size() + " Cases");
-
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
 		List<SFSCCase> caseList = new ArrayList<SFSCCase>();
-		for (Entry<String, String> caseItem : caseIds.entrySet()) {
-			composite += ",{\"method\": \"GET\",\"url\": \""+caseItem.getValue()+"\",\"referenceId\": \""+ caseItem.getKey() +"\"}";
+		for (SFItemObject caseItem : sfItemObjectList) {
+			compositeCalls.put(caseItem.getId(), new CompositeItem ("Case" , caseItem.getId() , caseItem,
+					"{\"method\": \"GET\",\"url\": \""+caseItem.getUrl()+"\",\"referenceId\": \""+ caseItem.getId() +"\"}"));
 		}
 		
-		if (composite.length()==0) {
+		if (compositeCalls.size()==0) {
 			return caseList;
 		} else {
-			composite = "{\r\n"
-					+ "    \"allOrNone\": false,\r\n"
-					+ "    \"compositeRequest\": [\r\n"
-					+ composite.substring(1)
-					+ "   ]\r\n"
-					+ "}";
-		}
-		logger.debug ("---- Salesforce Get Cases Request : " + composite.replace("\n", "").replace("\r", ""));
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-
-		if (response.getStatusCode()==HttpStatus.OK) {
-			logger.debug ("---- Salesforce Get Cases Response : " + response.getBody());
+			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls, 24 , "Get Case", true);
 			
-			JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
-			
-			JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
-			for (JsonNode linkedObjectList : compositeResponseNode) {
-				JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-				if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-					JsonNode bodyNode = linkedObjectList.get("body"); 
-					if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-						SFSCCase caseItem = new SFSCCase (bodyNode);
-						caseList.add(caseItem);
+			for (ResponseEntity<String> response : responses) {
+				if (response.getStatusCode()==HttpStatus.OK) {
+					logger.debug ("---> Salesforce Get Case Response : " + response.getBody());
+					
+					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+					
+					JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+					for (JsonNode linkedObjectList : compositeResponseNode) {
+						JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+						if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+							JsonNode bodyNode = linkedObjectList.get("body"); 
+							if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+								SFSCCase customerorder = SFSCCustomerHelper.getInstance().getSFSCCase (bodyNode);
+								caseList.add(customerorder);
+							}
+						}
 					}
-				}
+				}			
 			}
 		}
 		return caseList;
 	}
-	
-	private List<SFSCOpportunity> getAllOpportunities(Map<String, String> opportunitiesIds) throws JsonMappingException, JsonProcessingException {		
-		logger.info ("---- Salesforce Get " + opportunitiesIds.size() + " Opportunities");
-		String composite = "";
 
+	private List<SFSCOpportunity> getAllOpportunities(List<SFItemObject> sfItemObjectList) throws JsonMappingException, JsonProcessingException {	
+		if (sfItemObjectList==null) {
+			logger.info ("--- Salesforce No Opportunity found");
+			return new ArrayList<SFSCOpportunity>();
+		}
+		logger.info ("--- Salesforce Get " + sfItemObjectList.size() + " Customer Orders");
+		
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
 		List<SFSCOpportunity> opportunityList = new ArrayList<SFSCOpportunity>();
-		for (Entry<String, String> customerOrderItem : opportunitiesIds.entrySet()) {
-			composite += ",{\"method\": \"GET\",\"url\": \""+customerOrderItem.getValue()+"\",\"referenceId\": \""+ customerOrderItem.getKey() +"\"}";
+		for (SFItemObject opportunityItem : sfItemObjectList) {
+			compositeCalls.put(opportunityItem.getId(), new CompositeItem ("Opportunity" , opportunityItem.getId() , opportunityItem ,
+					"{\"method\": \"GET\",\"url\": \""+opportunityItem.getUrl()+"\",\"referenceId\": \""+ opportunityItem.getId() +"\"}"));
 		}
 		
-		if (composite.length()==0) {
+		if (compositeCalls.size()==0) {
 			return opportunityList;
 		} else {
-			composite = "{\r\n"
-					+ "    \"allOrNone\": false,\r\n"
-					+ "    \"compositeRequest\": [\r\n"
-					+ composite.substring(1)
-					+ "   ]\r\n"
-					+ "}";
-		}
-		logger.debug ("---- Salesforce Get Opportunities : " + composite.replace("\n", "").replace("\r", "") );
-		Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
-		ResponseEntity<String> response = null;
-		try {
-			response = job.call();
-		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-
-		if (response.getStatusCode()==HttpStatus.OK) {
-			logger.debug ("Salesforce response - Opportunity : " + response.getBody());
+			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls, 24 , "Get Opportunity", true);
 			
-			JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
-			
-			JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
-			for (JsonNode linkedObjectList : compositeResponseNode) {
-				JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-				if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-					JsonNode bodyNode = linkedObjectList.get("body"); 
-					if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-						SFSCOpportunity opportunity = SFSCCustomerHelper.getInstance().getSFSCOpportunity (bodyNode);
-						opportunityList.add(opportunity);
+			for (ResponseEntity<String> response : responses) {
+				if (response.getStatusCode()==HttpStatus.OK) {
+					logger.debug ("---> Salesforce Get Opportunity Response : " + response.getBody());
+					
+					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+					
+					JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+					for (JsonNode linkedObjectList : compositeResponseNode) {
+						JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+						if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+							JsonNode bodyNode = linkedObjectList.get("body"); 
+							if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+								SFSCOpportunity opportunity = SFSCCustomerHelper.getInstance().getSFSCOpportunity(bodyNode);
+								opportunityList.add(opportunity);
+								
+								//TODO ajouter la recherche des email d'opportunité
+							}
+						}
 					}
-				}
+				}			
 			}
 		}
 		return opportunityList;
+		
+//							if ((attributesNode!=null)&&(!attributesNode.isNull())) {
+//								JsonNode typeNode = linkedObjectList.get("type");
+//								if ((typeNode!=null)&&(!typeNode.isNull())) {
+//									type = typeNode.asText();
+//								}
+//								JsonNode urlNode = linkedObjectList.get("url");
+//								if ((urlNode!=null)&&(!urlNode.isNull())) {
+//									url = urlNode.asText();
+//								}
+//							}
+//							
+//							if (type!=null) {
+//								if (type.equals("Opportunity")) {
+//									SFSCOpportunity opportunity = SFSCCustomerHelper.getInstance().getSFSCOpportunity (bodyNode);
+//									opportunityList.add(opportunity);								
+//								}
+//								if (type.equals("EmailMessage")) {
+////									crObject = SFItemObject.getResponseObject(recordNode);
+//
+//									JsonNode idNode = linkedObjectList.get("Id");
+//									if ((idNode!=null)&&(!idNode.isNull())) {
+//										String id = idNode.asText();
+//										emailIds.put(id, url);
+//									}
+
 	}
 	
-	private List<SFSCCustomerOrder> getAllCustomerOrders(Map<String, String> customerOrderIds) throws JsonMappingException, JsonProcessingException {
-		logger.info ("--- Salesforce Get Customer " + customerOrderIds.size() + " Orders");
+//	private List<SFSCOpportunity> getAllOpportunities(Map<String, String> opportunitiesIds) throws JsonMappingException, JsonProcessingException {		
+//		logger.info ("---- Salesforce Get " + opportunitiesIds.size() + " Opportunities");
+//		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+//
+//		List<SFSCOpportunity> opportunityList = new ArrayList<SFSCOpportunity>();
+//		for (Entry<String, String> opportunityItem : opportunitiesIds.entrySet()) {
+//			compositeCalls.put(opportunityItem.getKey(), new CompositeItem ( "Opportunity" , opportunityItem.getKey() , 
+//					"{\"method\": \"GET\",\"url\": \""+opportunityItem.getValue()+"\",\"referenceId\": \""+ opportunityItem.getKey() +"\"}"));
+//		}
+//		
+//		if (compositeCalls.size()==0) {
+//			return opportunityList;
+//		} 
+//		
+//		List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls, 24 , "Get Opportunities");
+//
+//		for (ResponseEntity<String> response : responses) {
+//			if (response.getStatusCode()==HttpStatus.OK) {
+//				logger.debug ("Salesforce response - Opportunity : " + response.getBody());
+//				
+//				JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+//				
+//				JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+//				for (JsonNode linkedObjectList : compositeResponseNode) {
+//					JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+//					if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+//						JsonNode bodyNode = linkedObjectList.get("body"); 
+//						if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+//							String type = null;
+//							String url = null;
+//							JsonNode attributesNode = linkedObjectList.get("attributes");
+//							if ((attributesNode!=null)&&(!attributesNode.isNull())) {
+//								JsonNode typeNode = linkedObjectList.get("type");
+//								if ((typeNode!=null)&&(!typeNode.isNull())) {
+//									type = typeNode.asText();
+//								}
+//								JsonNode urlNode = linkedObjectList.get("url");
+//								if ((urlNode!=null)&&(!urlNode.isNull())) {
+//									url = urlNode.asText();
+//								}
+//							}
+//							
+//							if (type!=null) {
+//								if (type.equals("Opportunity")) {
+//									SFSCOpportunity opportunity = SFSCCustomerHelper.getInstance().getSFSCOpportunity (bodyNode);
+//									opportunityList.add(opportunity);								
+//								}
+//								if (type.equals("EmailMessage")) {
+////									crObject = SFItemObject.getResponseObject(recordNode);
+//
+//									JsonNode idNode = linkedObjectList.get("Id");
+//									if ((idNode!=null)&&(!idNode.isNull())) {
+//										String id = idNode.asText();
+//										emailIds.put(id, url);
+//									}
+//								}
+//							}
+//						}
+//					}
+//				}
+//			}
+//		}
+//		return opportunityList;
+//	}
+//	
+	private List<SFSCCustomerOrder> getAllCustomerOrders(List<SFItemObject> sfItemObjectList) throws JsonMappingException, JsonProcessingException {
+		if (sfItemObjectList==null) {
+			logger.info ("--- Salesforce No Customer Order found");
+			return new ArrayList<SFSCCustomerOrder>();
+		}
+		logger.info ("--- Salesforce Get Customer " + sfItemObjectList.size() + " Orders");
 		
-		List<String> compositeCalls = new ArrayList<String>();
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
 		List<SFSCCustomerOrder> customerOrderList = new ArrayList<SFSCCustomerOrder>();
-		for (Entry<String, String> customerOrderItem : customerOrderIds.entrySet()) {
-			compositeCalls.add("{\"method\": \"GET\",\"url\": \""+customerOrderItem.getValue()+"\",\"referenceId\": \""+ customerOrderItem.getKey() +"\"}");
+		for (SFItemObject customerOrderItem : sfItemObjectList) {
+			compositeCalls.put(customerOrderItem.getId(), new CompositeItem ("Customer Order" , customerOrderItem.getId() , customerOrderItem ,
+					"{\"method\": \"GET\",\"url\": \""+customerOrderItem.getUrl()+"\",\"referenceId\": \""+ customerOrderItem.getId() +"\"}"));
 		}
 		
 		if (compositeCalls.size()==0) {
 			return customerOrderList;
 		} else {
-			List<ResponseEntity<String>> responses = sfscClient.callComposite(compositeCalls);
+			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls, 24 , "Get Customer Orders", true);
 			
 			for (ResponseEntity<String> response : responses) {
 				if (response.getStatusCode()==HttpStatus.OK) {
@@ -959,25 +1091,64 @@ public class SalesForceAnonymizer {
 		return customerOrderList;
 	}
 
+//	private List<SFSCCustomerOrder> getAllCustomerOrders(Map<String, String> customerOrderIds) throws JsonMappingException, JsonProcessingException {
+//		logger.info ("--- Salesforce Get Customer " + customerOrderIds.size() + " Orders");
+//		
+//		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+//		List<SFSCCustomerOrder> customerOrderList = new ArrayList<SFSCCustomerOrder>();
+//		for (Entry<String, String> customerOrderItem : customerOrderIds.entrySet()) {
+//			compositeCalls.put(customerOrderItem.getKey(), new CompositeItem ("Customer Order" , customerOrderItem.getKey() , 
+//					"{\"method\": \"GET\",\"url\": \""+customerOrderItem.getValue()+"\",\"referenceId\": \""+ customerOrderItem.getKey() +"\"}"));
+//		}
+//		
+//		if (compositeCalls.size()==0) {
+//			return customerOrderList;
+//		} else {
+//			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls, 24 , "Get Customer Orders");
+//			
+//			for (ResponseEntity<String> response : responses) {
+//				if (response.getStatusCode()==HttpStatus.OK) {
+//					logger.debug ("---> Salesforce Get Customer Orders Response : " + response.getBody());
+//					
+//					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+//					
+//					JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+//					for (JsonNode linkedObjectList : compositeResponseNode) {
+//						JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+//						if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+//							JsonNode bodyNode = linkedObjectList.get("body"); 
+//							if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+//								SFSCCustomerOrder customerorder = SFSCCustomerHelper.getInstance().getSFSCCustomerOrder(bodyNode);
+//								customerOrderList.add(customerorder);
+//							}
+//						}
+//					}
+//				}			
+//			}
+//		}
+//		return customerOrderList;
+//	}
+	
 	private void fillSupplierOrderList(List<SFSCCustomerOrder> customerOrderList) throws JsonMappingException, JsonProcessingException {
 		logger.info ("---- Salesforce Get " + customerOrderList.size() + " Supplier Orders");
-		List<String> compositeCalls = new ArrayList<String>();
+		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
 		for (SFSCCustomerOrder customerOrder : customerOrderList) {
-			compositeCalls.add("        {\r\n"
+			compositeCalls.put(customerOrder.getId(), new CompositeItem ( "Supplier Order from Customer Order" , customerOrder.getId() , customerOrder ,
+					"        {\r\n"
 					+ "            \"method\": \"GET\",\r\n"
-					+ "            \"url\": \"/services/data/v61.0/query?q=SELECT Id FROM CustomerOrderLine__c WHERE CustomerOrder__c  = '"+customerOrder.getId()+"'\",\r\n"
+					+ "            \"url\": \"/services/data/v61.0/query?q=SELECT id, SupplierOrderLine__c , SupplierOrderLine__r.ExternalId__c, SupplierOrderLine__r.SupplierOrder__c, SupplierOrderLine__r.SupplierOrder__r.ExternalId__c  FROM CustomerSupplierOrderLine__c WHERE CustomerOrderLine__r.CustomerOrder__c  ='"+customerOrder.getId()+"'\",\r\n"
 					+ "            \"referenceId\": \""+customerOrder.getId()+"\"\r\n"
-					+ "        }");
+					+ "        }"));
 		}
 		
 		if (compositeCalls.size()>0) {
-			List<ResponseEntity<String>> responses = sfscClient.callComposite(compositeCalls);
-		
-			List<String> customerOrderLineIds = new ArrayList<String>();
+			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls , 24 , "Get Supplier Orders from customer order", true);
+
+			List<String> suppOrderIds = new ArrayList<String>();
+			List<String> stockOrderIds = new ArrayList<String>();
 			
 			for (ResponseEntity<String> response : responses) {
 				if (response.getStatusCode()==HttpStatus.OK) {
-					logger.debug ("----> Salesforce Get Supplier Orders Lines Response : " + response.getBody());
 					
 					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
 					
@@ -990,9 +1161,14 @@ public class SalesForceAnonymizer {
 								JsonNode bodyRecords = bodyNode.get("records"); 
 								if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
 									for (JsonNode record : bodyRecords) {
-										JsonNode idNode = record.get("Id");
-										if ((idNode!=null)&&(!idNode.isNull())) {
-											customerOrderLineIds.add(idNode.asText());											
+										JsonNode supplierOrderLine__rNode = record.get("SupplierOrderLine__r");
+										if ((supplierOrderLine__rNode!=null)&&(!supplierOrderLine__rNode.isNull())) {
+											JsonNode SupplierOrder__cNode = supplierOrderLine__rNode.get("SupplierOrder__c");
+											if ((SupplierOrder__cNode!=null)&&(!SupplierOrder__cNode.isNull())) {
+												if (!suppOrderIds.contains(SupplierOrder__cNode.asText())) {
+													suppOrderIds.add(SupplierOrder__cNode.asText());
+												}
+											}
 										}
 									}
 								}
@@ -1002,39 +1178,55 @@ public class SalesForceAnonymizer {
 				}
 			}
 			
-			if (customerOrderLineIds.size()>0) {
-				compositeCalls = new ArrayList<String>();
-				for (String customerOrderLineId : customerOrderLineIds) {
-					compositeCalls.add("        {\r\n"
-							+ "            \"method\": \"GET\",\r\n"
-							+ "            \"url\": \"/services/data/v61.0/query?q=SELECT SupplierOrderLine__c FROM CustomerSupplierOrderLine__c WHERE CustomerOrderLine__c = '"+ customerOrderLineId +"'\",\r\n"
-							+ "            \"referenceId\": \""+customerOrderLineId+"\"\r\n"
-							+ "        }");
-				}
-
-				if (compositeCalls.size()>0) {
-					responses = sfscClient.callComposite(compositeCalls);
-				
-					List<String> suplierOrderLineIds = new ArrayList<String>();
-					
-					for (ResponseEntity<String> response : responses) {
-						if (response.getStatusCode()==HttpStatus.OK) {
-							logger.debug ("----> Salesforce Get Supplier Orders Lines <-> Customer Orders Lines - Response : " + response.getBody());
-							
-							JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
-							
-							JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
-							for (JsonNode linkedObjectList : compositeResponseNode) {
-								JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-								if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-									JsonNode bodyNode = linkedObjectList.get("body"); 
-									if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-										JsonNode bodyRecords = bodyNode.get("records"); 
-										if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
-											for (JsonNode record : bodyRecords) {
-												JsonNode idNode = record.get("SupplierOrderLine__c");
-												if ((idNode!=null)&&(!idNode.isNull())) {
-													suplierOrderLineIds.add(idNode.asText());											
+			Map<String, CompositeItem> coCompositeCalls = new LinkedHashMap<String, CompositeItem>();
+			for (String supplierOrderId : suppOrderIds) {
+				coCompositeCalls.put(supplierOrderId, new CompositeItem ( "Customer Order From Supplier Order" , supplierOrderId , 
+						"        {\r\n"
+						+ "            \"method\": \"GET\",\r\n"
+						+ "            \"url\": \"/services/data/v61.0/query?q=SELECT id, Quantity__c, SupplierOrderLine__r.Quantity__c,  CustomerOrderLine__r.ExternalId__c , CustomerOrderLine__r.CustomerOrder__c, CustomerOrderLine__r.CustomerOrder__r.ExternalId__c, CustomerOrderLine__r.CustomerOrder__r.Account__c  from CustomerSupplierOrderLine__c Where SupplierOrderLine__r.SupplierOrder__c = '"+supplierOrderId+"'\",\r\n"
+						+ "            \"referenceId\": \""+supplierOrderId+"\"\r\n"
+						+ "        }"));
+			}
+			
+			if (coCompositeCalls.size()>0) {
+				List<ResponseEntity<String>> coResponses = callCompositeItems(coCompositeCalls , 24 , "Get Customer Order From Supplier Order", true);
+				for (ResponseEntity<String> response : coResponses) {
+					if (response.getStatusCode()==HttpStatus.OK) {
+						
+						JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+						
+						JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+						for (JsonNode linkedObjectList : compositeResponseNode) {
+							JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+							if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+								String reference = referenceObjectNode.asText();
+								
+								JsonNode bodyNode = linkedObjectList.get("body"); 
+								if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+									JsonNode bodyRecords = bodyNode.get("records"); 
+									if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
+										for (JsonNode record : bodyRecords) {
+											Double stockQuantity = null;
+											Double supplierQuantity = null;
+											JsonNode stockQuantityNode = record.get("Quantity__c"); 
+											if ((stockQuantityNode!=null)&&(!stockQuantityNode.isNull())) {
+												stockQuantity = stockQuantityNode.asDouble();
+											}
+											JsonNode SupplierOrderLine__rNode = record.get("SupplierOrderLine__r"); 
+											if ((SupplierOrderLine__rNode!=null)&&(!SupplierOrderLine__rNode.isNull())) {
+												JsonNode supplierQuantityNode = SupplierOrderLine__rNode.get("Quantity__c"); 
+												if ((supplierQuantityNode!=null)&&(!supplierQuantityNode.isNull())) {
+													supplierQuantity = supplierQuantityNode.asDouble();
+												}
+											}
+											if ((stockQuantity!=null) && (supplierQuantity!=null)) {
+												if (stockQuantity.doubleValue() == supplierQuantity.doubleValue()) {
+													// Les quantité étant égales on peut conclure que c'est une ligne de commande de contremarque
+												} else {
+													// Les quantité étant différentes on peut conclure que c'est une ligne de commande de Stock
+													if (!stockOrderIds.contains(reference)) {
+														stockOrderIds.add(reference);
+													}
 												}
 											}
 										}
@@ -1043,111 +1235,213 @@ public class SalesForceAnonymizer {
 							}
 						}
 					}
-					if (suplierOrderLineIds.size()>0) {
-						compositeCalls = new ArrayList<String>();
-						for (String suplierOrderLineId : suplierOrderLineIds) {
-							compositeCalls.add("        {\r\n"
-									+ "            \"method\": \"GET\",\r\n"
-									+ "            \"url\": \"/services/data/v61.0/query?q=SELECT SupplierOrder__c FROM SupplierOrderLine__c WHERE Id  = '"+suplierOrderLineId+"'\",\r\n"
-									+ "            \"referenceId\": \""+suplierOrderLineId+"\"\r\n"
-									+ "        }");
-						}
-	
-						if (compositeCalls.size()>0) {
-							responses = sfscClient.callComposite(compositeCalls);
-								
-							List<String> localSupplierOrderLinesId = new ArrayList<String>();
-							for (ResponseEntity<String> response : responses) {
-								if (response.getStatusCode()==HttpStatus.OK) {
-									logger.debug ("----> Salesforce Get Supplier Orders - Response : " + response.getBody());
-									
-									JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
-									
-									JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
-									for (JsonNode linkedObjectList : compositeResponseNode) {
-										JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-										if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-											JsonNode bodyNode = linkedObjectList.get("body"); 
-											if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-												JsonNode bodyRecords = bodyNode.get("records"); 
-												if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
-													for (JsonNode record : bodyRecords) {
-														JsonNode idNode = record.get("SupplierOrder__c");
-														if ((idNode!=null)&&(!idNode.isNull())) {
-															if (!localSupplierOrderLinesId.contains(idNode.asText())) {
-																localSupplierOrderLinesId.add(idNode.asText());																											
-															}
-														}
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-							List<String> howManyCustomerOrderCalls = new ArrayList<String>();
-							// getting all Customer orders attached to a Supplier Order. 
-							// If Result > 1 => It's a stock Order
-							// If Result = 1 => It's an order on demand (Contremarque)
-							// If Result < 0 => It's Incoherent
-							
-							for (String supplierOrderId : localSupplierOrderLinesId) {
-								howManyCustomerOrderCalls.add("        {\r\n"
-										+ "            \"method\": \"GET\",\r\n"
-										+ "            \"url\": \"/services/data/v61.0/query?q=SELECT Id, SupplierOrderLine__r.SupplierOrder__r.ExternalId__c, CustomerOrderLine__r.CustomerOrder__r.ExternalId__c From CustomerSupplierOrderLine__c where SupplierOrderLine__c in ( SELECT Id FROM SupplierOrderLine__c where SupplierOrder__r.Id = '"+supplierOrderId+"')\",\r\n"
-										+ "            \"referenceId\": \""+supplierOrderId.trim()+"\"\r\n"
-										+ "        }");
-							}
-								
-							if (howManyCustomerOrderCalls.size()>0) {
-								responses = sfscClient.callComposite(howManyCustomerOrderCalls);
-								
-								for (ResponseEntity<String> response : responses) {
-									if (response.getStatusCode()==HttpStatus.OK) {
-										logger.debug ("----> Salesforce Count Customer Orders from Supplier Orders - Response : " + response.getBody());
-										
-										JsonNode sourceCustomerOrderNode = mapper.readTree(response.getBody());
-										
-										JsonNode compositeResponseNode = sourceCustomerOrderNode.get("compositeResponse");
-										for (JsonNode linkedObjectList : compositeResponseNode) {
-											JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-											if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-												JsonNode bodyNode = linkedObjectList.get("body"); 
-												if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-													JsonNode sizeNode = bodyNode.get("totalSize"); 
-													if ((sizeNode!=null)&&(!sizeNode.isNull())) {
-														if (sizeNode.asInt()==1) {
-															supplierOrderIds.add(referenceObjectNode.asText());															
-														} else {
-															String external_Id = "NotFound";
-															JsonNode recordsNode = linkedObjectList.get("records"); 
-															if ((recordsNode!=null)&&(!recordsNode.isNull())) {
-																JsonNode supplierOrderLineNode = linkedObjectList.get("SupplierOrderLine__r"); 
-																if ((supplierOrderLineNode!=null)&&(!supplierOrderLineNode.isNull())) {
-																	JsonNode supplierOrderNode = supplierOrderLineNode.get("CustomerOrder__r"); 
-																	if ((supplierOrderNode!=null)&&(!supplierOrderNode.isNull())) {
-																		JsonNode supplierExternalIdNode = supplierOrderNode.get("ExternalId__c"); 
-																		if ((supplierExternalIdNode!=null)&&(!supplierExternalIdNode.isNull())) {
-																			external_Id = supplierExternalIdNode.asText();
-																		}
-																	}
-																}
-															}
-															logger.warn("Supplier Order '" + external_Id + "' is linked to multiple customer order. Impossible to anonymized.");
-														}
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-						}
+				}
+				for (String supplierOrderId : suppOrderIds) {
+					if (!stockOrderIds.contains(supplierOrderId)) {
+						supplierOrderIds.add(supplierOrderId);
 					}
 				}
 			}
 		}
 	}
+	
+//	@Deprecated
+//	private void fillSupplierOrderListOld (List<SFSCCustomerOrder> customerOrderList) throws JsonMappingException, JsonProcessingException {
+//		logger.info ("---- Salesforce Get " + customerOrderList.size() + " Supplier Orders");
+//		Map<String, CompositeItem> compositeCalls = new LinkedHashMap<String, CompositeItem>();
+//		for (SFSCCustomerOrder customerOrder : customerOrderList) {
+//			compositeCalls.put(customerOrder.getId(), new CompositeItem ( "Customer Order Line" , customerOrder.getId() ,
+//					"        {\r\n"
+//					+ "            \"method\": \"GET\",\r\n"
+//					+ "            \"url\": \"/services/data/v61.0/query?q=SELECT Id FROM CustomerOrderLine__c WHERE CustomerOrder__c  = '"+customerOrder.getId()+"'\",\r\n"
+//					+ "            \"referenceId\": \""+customerOrder.getId()+"\"\r\n"
+//					+ "        }"));
+//		}
+//
+//		//SELECT id, SupplierOrderLine__c , SupplierOrderLine__r.ExternalId__c, SupplierOrderLine__r.SupplierOrder__c, SupplierOrderLine__r.SupplierOrder__r.ExternalId__c  FROM CustomerSupplierOrderLine__c WHERE CustomerOrderLine__r.CustomerOrder__c  = 'a0Xds000001eGv9EAE'
+//		//SELECT id, Quantity__c, SupplierOrderLine__r.Quantity__c,  CustomerOrderLine__r.ExternalId__c , CustomerOrderLine__r.CustomerOrder__c, CustomerOrderLine__r.CustomerOrder__r.ExternalId__c, CustomerOrderLine__r.CustomerOrder__r.Account__c  from CustomerSupplierOrderLine__c Where SupplierOrderLine__r.SupplierOrder__c = 'a0jds000006bnG7AAI'
+//		
+//		if (compositeCalls.size()>0) {
+//			List<ResponseEntity<String>> responses = callCompositeItems(compositeCalls , 24 , "Get Supplier Order Lines", true);
+//		
+//			List<String> customerOrderLineIds = new ArrayList<String>();
+//			
+//			for (ResponseEntity<String> response : responses) {
+//				if (response.getStatusCode()==HttpStatus.OK) {
+//					logger.debug ("----> Salesforce Get Supplier Orders Lines Response : " + response.getBody());
+//					
+//					JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+//					
+//					JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+//					for (JsonNode linkedObjectList : compositeResponseNode) {
+//						JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+//						if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+//							JsonNode bodyNode = linkedObjectList.get("body"); 
+//							if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+//								JsonNode bodyRecords = bodyNode.get("records"); 
+//								if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
+//									for (JsonNode record : bodyRecords) {
+//										JsonNode idNode = record.get("Id");
+//										if ((idNode!=null)&&(!idNode.isNull())) {
+//											customerOrderLineIds.add(idNode.asText());											
+//										}
+//									}
+//								}
+//							}
+//						}
+//					}
+//				}
+//			}
+//			
+//			if (customerOrderLineIds.size()>0) {
+//				compositeCalls = new LinkedHashMap<String, CompositeItem>();
+//				for (String customerOrderLineId : customerOrderLineIds) {
+//					compositeCalls.put(customerOrderLineId, new CompositeItem ( "Supplier Order Line" , customerOrderLineId ,
+//							"        {\r\n"
+//							+ "            \"method\": \"GET\",\r\n"
+//							+ "            \"url\": \"/services/data/v61.0/query?q=SELECT SupplierOrderLine__c FROM CustomerSupplierOrderLine__c WHERE CustomerOrderLine__c = '"+ customerOrderLineId +"'\",\r\n"
+//							+ "            \"referenceId\": \""+customerOrderLineId+"\"\r\n"
+//							+ "        }"));
+//				}
+//
+//				if (compositeCalls.size()>0) {
+//					responses = callCompositeItems(compositeCalls, 24 , "Get Supplier Order Line <-> Customer OrderLines", true);
+//				
+//					List<String> suplierOrderLineIds = new ArrayList<String>();
+//					
+//					for (ResponseEntity<String> response : responses) {
+//						if (response.getStatusCode()==HttpStatus.OK) {
+//							logger.debug ("----> Salesforce Get Supplier Orders Lines <-> Customer Orders Lines - Response : " + response.getBody());
+//							
+//							JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+//							
+//							JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+//							for (JsonNode linkedObjectList : compositeResponseNode) {
+//								JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+//								if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+//									JsonNode bodyNode = linkedObjectList.get("body"); 
+//									if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+//										JsonNode bodyRecords = bodyNode.get("records"); 
+//										if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
+//											for (JsonNode record : bodyRecords) {
+//												JsonNode idNode = record.get("SupplierOrderLine__c");
+//												if ((idNode!=null)&&(!idNode.isNull())) {
+//													suplierOrderLineIds.add(idNode.asText());											
+//												}
+//											}
+//										}
+//									}
+//								}
+//							}
+//						}
+//					}
+//					if (suplierOrderLineIds.size()>0) {
+//						compositeCalls = new LinkedHashMap<String, CompositeItem>();
+//						for (String suplierOrderLineId : suplierOrderLineIds) {
+//							compositeCalls.put(suplierOrderLineId, new CompositeItem ("Supplier Order" , suplierOrderLineId , 
+//									"        {\r\n"
+//									+ "            \"method\": \"GET\",\r\n"
+//									+ "            \"url\": \"/services/data/v61.0/query?q=SELECT SupplierOrder__c FROM SupplierOrderLine__c WHERE Id  = '"+suplierOrderLineId+"'\",\r\n"
+//									+ "            \"referenceId\": \""+suplierOrderLineId+"\"\r\n"
+//									+ "        }"));
+//						}
+//	
+//						if (compositeCalls.size()>0) {
+//							responses = callCompositeItems(compositeCalls , 24 , "Get Supplier Orders", true);
+//								
+//							List<String> localSupplierOrderLinesId = new ArrayList<String>();
+//							for (ResponseEntity<String> response : responses) {
+//								if (response.getStatusCode()==HttpStatus.OK) {
+//									logger.debug ("----> Salesforce Get Supplier Orders - Response : " + response.getBody());
+//									
+//									JsonNode sfscLinkedObjectIDsNode = mapper.readTree(response.getBody());
+//									
+//									JsonNode compositeResponseNode = sfscLinkedObjectIDsNode.get("compositeResponse");
+//									for (JsonNode linkedObjectList : compositeResponseNode) {
+//										JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+//										if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+//											JsonNode bodyNode = linkedObjectList.get("body"); 
+//											if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+//												JsonNode bodyRecords = bodyNode.get("records"); 
+//												if ((bodyRecords!=null)&&(!bodyRecords.isNull())) {
+//													for (JsonNode record : bodyRecords) {
+//														JsonNode idNode = record.get("SupplierOrder__c");
+//														if ((idNode!=null)&&(!idNode.isNull())) {
+//															if (!localSupplierOrderLinesId.contains(idNode.asText())) {
+//																localSupplierOrderLinesId.add(idNode.asText());																											
+//															}
+//														}
+//													}
+//												}
+//											}
+//										}
+//									}
+//								}
+//							}
+//							Map<String,CompositeItem> howManyCustomerOrderCalls = new LinkedHashMap<String, CompositeItem>();
+//							// getting all Customer orders attached to a Supplier Order. 
+//							// If Result > 1 => It's a stock Order
+//							// If Result = 1 => It's an order on demand (Contremarque)
+//							// If Result < 0 => It's Incoherent
+//							
+//							for (String supplierOrderId : localSupplierOrderLinesId) {
+//								howManyCustomerOrderCalls.put(supplierOrderId.trim(), new CompositeItem ( "Supplier Order Line", supplierOrderId.trim() ,
+//										"        {\r\n"
+//										+ "            \"method\": \"GET\",\r\n"
+//										+ "            \"url\": \"/services/data/v61.0/query?q=SELECT Id, SupplierOrderLine__r.SupplierOrder__r.ExternalId__c, CustomerOrderLine__r.CustomerOrder__r.ExternalId__c From CustomerSupplierOrderLine__c where SupplierOrderLine__c in ( SELECT Id FROM SupplierOrderLine__c where SupplierOrder__r.Id = '"+supplierOrderId+"')\",\r\n"
+//										+ "            \"referenceId\": \""+supplierOrderId.trim()+"\"\r\n"
+//										+ "        }"));
+//							}
+//								
+//							if (howManyCustomerOrderCalls.size()>0) {
+//								responses = callCompositeItems(howManyCustomerOrderCalls , 24 , "Count Customer Orders from Supplier Orders", true);
+//								
+//								for (ResponseEntity<String> response : responses) {
+//									if (response.getStatusCode()==HttpStatus.OK) {
+//										logger.debug ("----> Salesforce Count Customer Orders from Supplier Orders - Response : " + response.getBody());
+//										
+//										JsonNode sourceCustomerOrderNode = mapper.readTree(response.getBody());
+//										
+//										JsonNode compositeResponseNode = sourceCustomerOrderNode.get("compositeResponse");
+//										for (JsonNode linkedObjectList : compositeResponseNode) {
+//											JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+//											if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+//												JsonNode bodyNode = linkedObjectList.get("body"); 
+//												if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+//													JsonNode sizeNode = bodyNode.get("totalSize"); 
+//													if ((sizeNode!=null)&&(!sizeNode.isNull())) {
+//														if (sizeNode.asInt()==1) {
+//															supplierOrderIds.add(referenceObjectNode.asText());															
+//														} else {
+//															String external_Id = "NotFound";
+//															JsonNode recordsNode = bodyNode.get("records"); 
+//															if ((recordsNode!=null)&&(!recordsNode.isNull())) {
+//																JsonNode supplierOrderLineNode = linkedObjectList.get("SupplierOrderLine__r"); 
+//																if ((supplierOrderLineNode!=null)&&(!supplierOrderLineNode.isNull())) {
+//																	JsonNode supplierOrderNode = supplierOrderLineNode.get("CustomerOrder__r"); 
+//																	if ((supplierOrderNode!=null)&&(!supplierOrderNode.isNull())) {
+//																		JsonNode supplierExternalIdNode = supplierOrderNode.get("ExternalId__c"); 
+//																		if ((supplierExternalIdNode!=null)&&(!supplierExternalIdNode.isNull())) {
+//																			external_Id = supplierExternalIdNode.asText();
+//																		}
+//																	}
+//																}
+//															}
+//															logger.warn("Supplier Order '" + external_Id + "' is linked to multiple customer order. Impossible to anonymized.");
+//														}
+//													}
+//												}
+//											}
+//										}
+//									}
+//								}
+//							}
+//						}
+//					}
+//				}
+//			}
+//		}
+//	}
 	
 	private SFSCCustomerOrder getCustomerOrders(String customerOrderId) throws JsonMappingException, JsonProcessingException {
 		logger.info ("---- Salesforce - get Customer Orders");
@@ -1191,30 +1485,244 @@ public class SalesForceAnonymizer {
 		}
 	}
 	
-	private void interpreteResponse(ReportType type, ClientEligible client, String body) throws JsonMappingException, JsonProcessingException {
-		JsonNode sourceCustomerOrderNode = mapper.readTree(body);
-		
-		JsonNode compositeResponseNode = sourceCustomerOrderNode.get("compositeResponse");
-		for (JsonNode linkedObjectList : compositeResponseNode) {
-			JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
-			String reference = null;
-			if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
-				reference = referenceObjectNode.asText();
-			}
-			JsonNode httpStatusCodeNode = linkedObjectList.get("httpStatusCode");
-			if ((httpStatusCodeNode!=null)&&(!httpStatusCodeNode.isNull())) {
-				reference = referenceObjectNode.asText();
-			}
+	public List<ResponseEntity<String>> callComposite(Map<String, String> compositeCalls, String label) throws JsonMappingException, JsonProcessingException {
+		return callComposite(compositeCalls, 24, label);
+	}
+	
+	public List<ResponseEntity<String>> callComposite(Map<String, String> compositeCalls, int batchSize, String label) throws JsonMappingException, JsonProcessingException {
+		int i = 0;
+		List<ResponseEntity<String>> results = new ArrayList<ResponseEntity<String>>();
+		String composite = "";
+		for (Entry<String, String> compositeCallEntry : compositeCalls.entrySet()) {
+			composite += "," + compositeCallEntry.getValue();
+			i++;
 			
-			JsonNode bodyNode = linkedObjectList.get("body"); 
-			if ((bodyNode!=null)&&(!bodyNode.isNull())) {
-				JsonNode doneNode = bodyNode.get("done"); 
-				if ((doneNode!=null)&&(!doneNode.isNull())) {
-					if (doneNode.asBoolean()) {
+			if (i>batchSize) {
+				composite = "{\r\n"
+						+ "    \"allOrNone\": false,\r\n"
+						+ "    \"compositeRequest\": [\r\n"
+						+ composite.substring(1)
+						+ "   ]\r\n"
+						+ "}";
+				
+				logger.debug("---- Salesforce Request - " + label + " : " +  composite.replace("\n","").replace("\r",""));
+				Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
+				composite = "";
+				i = 0;
+
+				ResponseEntity<String> response = null;
+				try {
+					response = job.call();
+				} catch (Exception e) {
+					logger.debug ("---- Salesforce Response - " + label + " - FAILED - " + e.getMessage());
+					ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.ERROR, e.getMessage()));
+					e.printStackTrace();
+				}
+				if (response.getStatusCode()==HttpStatus.OK ) {
+					logger.info ("---- Salesforce Response - " + label + " - SUCCESS - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+					ReportBook.getInstance().addReport (new Report(currentCustomer, "Salesforce" , label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.OK, null));
+				} else {
+					logger.error ("---- Salesforce Response - " + label + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
+					ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") ));
+				}
+				
+				results.add(response);
+
+			}
+		}
+		if (i>0) {
+			composite = "{\r\n"
+					+ "    \"allOrNone\": false,\r\n"
+					+ "    \"compositeRequest\": [\r\n"
+					+ composite.substring(1)
+					+ "   ]\r\n"
+					+ "}";
+
+			logger.debug("---- Salesforce Request - " + label + " : " +  composite.replace("\n","").replace("\r",""));
+			Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
+			composite = "";
+
+			ResponseEntity<String> response = null;
+			try {
+				response = job.call();
+			} catch (Exception e) {
+				logger.debug ("---- Salesforce Response - " + label + " - FAILED - " + e.getMessage());
+				ReportBook.getInstance().addReport (new Report(currentCustomer, "Salesforce" ,  label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.ERROR, e.getMessage()));
+				e.printStackTrace();
+			}
+			if (response.getStatusCode()==HttpStatus.OK ) {
+				logger.info ("---- Salesforce Response - " + label + " - SUCCESS - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+				ReportBook.getInstance().addReport (new Report(currentCustomer, "Salesforce" , label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.OK, null));
+			} else {
+				logger.error ("---- Salesforce Response - " + label + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
+				ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") ));
+			}
+
+			results.add(response);			
+		}
+		
+		for (ResponseEntity<String> responseEntity : results) {
+			JsonNode sourceCustomerOrderNode = mapper.readTree(responseEntity.getBody());
+			
+			JsonNode compositeResponseNode = sourceCustomerOrderNode.get("compositeResponse");
+			for (JsonNode linkedObjectList : compositeResponseNode) {
+				JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+				String reference = null;
+				if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+					reference = referenceObjectNode.asText();
+				}
+				String statusCode = null;
+				JsonNode httpStatusCodeNode = linkedObjectList.get("httpStatusCode");
+				if ((httpStatusCodeNode!=null)&&(!httpStatusCodeNode.isNull())) {
+					statusCode = httpStatusCodeNode.asText();
+					if (statusCode.substring(0, 1).equals("2")) {
+						ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , label, reference, "", ReportGravity.OK, statusCode));
+					} else {
 						
+					}
+				}
+								
+//				JsonNode bodyNode = linkedObjectList.get("body"); 
+//				if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+//					JsonNode doneNode = bodyNode.get("done"); 
+//					if ((doneNode!=null)&&(!doneNode.isNull())) {
+//						if (doneNode.asBoolean()) {
+//							
+//						}
+//					}
+//				}
+			}
+
+		}
+		return results;
+	}
+
+	public List<ResponseEntity<String>> callCompositeItems(Map<String, CompositeItem> compositeCalls, int batchSize, String label) throws JsonMappingException, JsonProcessingException {
+		return callCompositeItems(compositeCalls, batchSize, label, false);
+	}
+	
+	public List<ResponseEntity<String>> callCompositeItems(Map<String, CompositeItem> compositeCalls, int batchSize, String label, boolean bypassReport) throws JsonMappingException, JsonProcessingException {
+		int i = 0;
+		List<ResponseEntity<String>> results = new ArrayList<ResponseEntity<String>>();
+		String composite = "";
+		for (Entry<String, CompositeItem> compositeCallEntry : compositeCalls.entrySet()) {
+			
+			composite += "," + compositeCallEntry.getValue().getRequest();
+			i++;
+			
+			if (i>batchSize) {
+				composite = "{\r\n"
+						+ "    \"allOrNone\": false,\r\n"
+						+ "    \"compositeRequest\": [\r\n"
+						+ composite.substring(1)
+						+ "   ]\r\n"
+						+ "}";
+				
+				logger.debug("---- Salesforce Request - " + label + " : " +  composite.replace("\n","").replace("\r",""));
+				Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
+				composite = "";
+				i = 0;
+
+				ResponseEntity<String> response = null;
+				try {
+					response = job.call();
+				} catch (Exception e) {
+					logger.debug ("---- Salesforce Response - " + label + " - FAILED - " + e.getMessage());
+					ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , label, "", "", ReportGravity.ERROR, e.getMessage()));
+					e.printStackTrace();
+				}
+				if (response.getStatusCode()==HttpStatus.OK ) {
+					logger.info ("---- Salesforce Response - " + label + " - SUCCESS - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+				} else {
+					logger.error ("---- Salesforce Response - " + label + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
+					ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , label, "", "", ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") ));
+				}
+				
+				results.add(response);
+
+			}
+		}
+		if (i>0) {
+			composite = "{\r\n"
+					+ "    \"allOrNone\": false,\r\n"
+					+ "    \"compositeRequest\": [\r\n"
+					+ composite.substring(1)
+					+ "   ]\r\n"
+					+ "}";
+
+			logger.debug("---- Salesforce Request - " + label + " : " +  composite.replace("\n","").replace("\r",""));
+			Callable<ResponseEntity<String>> job = sfscClient.callComposite(composite);
+			composite = "";
+
+			ResponseEntity<String> response = null;
+			try {
+				response = job.call();
+			} catch (Exception e) {
+				logger.debug ("---- Salesforce Response - " + label + " - FAILED - " + e.getMessage());
+				if (!bypassReport) ReportBook.getInstance().addReport (new Report(currentCustomer, "Salesforce" ,  label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.ERROR, e.getMessage()));
+				e.printStackTrace();
+			}
+			if (response.getStatusCode()==HttpStatus.OK ) {
+				logger.info ("---- Salesforce Response - " + label + " - SUCCESS - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", ""));							
+			} else {
+				logger.error ("---- Salesforce Response - " + label + " - FAILED - " + response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") );				
+				if (!bypassReport) ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , label, currentCustomer.getCodeClient(), currentCustomer.getUuid(), ReportGravity.ERROR, response.getStatusCode() + " - " + response.getBody().replace("\n", "").replace("\r", "") ));
+			}
+
+			results.add(response);			
+		}
+		
+		
+		if (!bypassReport) {
+			for (ResponseEntity<String> responseEntity : results) {
+				JsonNode sourceCustomerOrderNode = mapper.readTree(responseEntity.getBody());
+				
+				JsonNode compositeResponseNode = sourceCustomerOrderNode.get("compositeResponse");
+				for (JsonNode linkedObjectList : compositeResponseNode) {
+					JsonNode referenceObjectNode = linkedObjectList.get("referenceId");
+					String reference = null;
+					if ((referenceObjectNode!=null)&&(!referenceObjectNode.isNull())) {
+						reference = referenceObjectNode.asText();
+					}
+					String statusCode = null;
+					JsonNode httpStatusCodeNode = linkedObjectList.get("httpStatusCode");
+					if ((httpStatusCodeNode!=null)&&(!httpStatusCodeNode.isNull())) {
+						statusCode = httpStatusCodeNode.asText();
+						CompositeItem item = compositeCalls.get(reference);
+						SFItemObject sfObject = item.getSFObject();
+						if (sfObject==null) {
+							JsonNode bodyNode = linkedObjectList.get("body");
+							if ((bodyNode!=null)&&(!bodyNode.isNull())) {
+								try {
+									sfObject = SFItemObject.getResponseObject(bodyNode);
+								} catch (Exception e) {
+									e.printStackTrace();
+								}
+								item.setCrObject(sfObject);
+							}
+						}
+						if (statusCode.substring(0, 1).equals("2")) {
+							if (sfObject==null) {
+								CompositeItem compositeItem = compositeCalls.get(reference);
+								if (compositeItem!=null) {
+									ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , item.getObjectName(), compositeItem.getObjectDescription(), compositeItem.getObjectComplementary(), ReportGravity.OK, statusCode));																																
+								} else {
+									ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , item.getObjectName(), reference, "", ReportGravity.OK, statusCode));																							
+								}
+							} else {
+								ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , item.getObjectName(), sfObject.getReference(), sfObject.getId(), ReportGravity.OK, statusCode));							
+							}
+						} else {
+							if (sfObject==null) {
+								ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , item.getObjectName(), httpStatusCodeNode.asText(), "", ReportGravity.ERROR, statusCode));						
+							} else {
+								ReportBook.getInstance().addReport (new Report(currentCustomer,  "Salesforce" , item.getObjectName(), sfObject.getReference(), sfObject.getId(), ReportGravity.ERROR, statusCode));						
+							}
+						}
 					}
 				}
 			}
 		}
+		return results;
 	}
 }

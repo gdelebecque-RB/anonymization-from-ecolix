@@ -4,7 +4,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>com.rochebobois.omnicanal.tools</groupId>
 	<artifactId>anonymization-from-ecolix</artifactId>
-	<version>0.0.1</version>
+	<version>0.0.6</version>
 
 	<properties>
 		<maven.compiler.source>17</maven.compiler.source>
@@ -15,37 +15,31 @@
 		<dependency>
 			<groupId>com.rochebobois.omnicanal</groupId>
 			<artifactId>api-client-mule</artifactId>
-			<version>1.0.0</version>
+			<version>1.1.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>com.rochebobois.omnicanal</groupId>
 			<artifactId>api-client-sfsc</artifactId>
-			<version>1.0.0</version>
+			<version>1.1.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>com.rochebobois.omnicanal</groupId>
 			<artifactId>api-client-myorders</artifactId>
-			<version>1.0.0</version>
-		</dependency>
-
-		<dependency>
-			<groupId>com.rochebobois.omnicanal</groupId>
-			<artifactId>api-client-mule</artifactId>
-			<version>1.0.0</version>
+			<version>1.0.1</version>
 		</dependency>
 
 		<dependency>
 			<groupId>com.rochebobois.omnicanal</groupId>
 			<artifactId>api-client-dotdigital</artifactId>
-			<version>0.0.1</version>
+			<version>1.0.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>com.rochebobois.omnicanal</groupId>
 			<artifactId>api-client-ecolix</artifactId>
-			<version>0.1.0</version>
+			<version>1.1.0</version>
 		</dependency>
 	</dependencies>
 
